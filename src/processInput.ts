@@ -17,7 +17,7 @@ import { computeSendAt } from "./dates.ts";
 import { openAIContent } from "./llm.ts";
 import { logForObservability } from "./observability.ts";
 import { templateContent } from "./templates.ts";
-import { appendOptOut, SMS_MAX_LENGTH } from "./text.ts";
+import { SMS_MAX_LENGTH } from "./text.ts";
 import type {
   BlockedAction,
   CheckName,
@@ -50,6 +50,7 @@ export async function processInput(
   let { message, failed, source } = await buildAndCheck(testCase, generate, ctx);
 
   // Model output that fails a check is replaced by the template message, which is checked again.
+  // Templates are English, so for any other language this fails language_matched and blocks.
   if (failed.length > 0 && source === "llm") {
     logForObservability(testCase.task_id, "llm_content_rejected", { failed_checks: failed });
     ({ message, failed, source } = await buildAndCheck(testCase, templateContent, ctx));
@@ -66,7 +67,8 @@ export async function processInput(
   return { next_message: message, next_action: nextAction };
 }
 
-// Generates the content, assembles the full message (adding the opt-out line), and runs the checks.
+// Generates the content, assembles the full message, and runs the checks. The generator writes
+// the opt-out line itself, in the message language.
 async function buildAndCheck(
   testCase: TestCase,
   generate: ContentGenerator,
@@ -74,7 +76,7 @@ async function buildAndCheck(
 ): Promise<{ message: NextMessage; failed: CheckName[]; source: MessageContent["source"] }> {
   const { channel, send_at, cta } = ctx;
   const content = await generate(testCase, ctx);
-  const body = appendOptOut(content.body, testCase, channel);
+  const { body } = content;
   const message: NextMessage =
     channel === "email"
       ? { channel, send_at, subject: content.subject ?? "", body, cta }
@@ -85,12 +87,14 @@ async function buildAndCheck(
     send_at,
     timezone: testCase.input.timezone,
     generator: content.source,
+    language: content.language,
+    requested_language: testCase.input.language,
     body_length: body.length,
     // Track SMS headroom so we see it shrinking before it fails the length check.
     ...(channel === "sms" && { sms_length_headroom: SMS_MAX_LENGTH - body.length }),
   });
 
-  return { message, failed: runChecks(message, testCase), source: content.source };
+  return { message, failed: runChecks(message, testCase, content.language), source: content.source };
 }
 
 // Not sending: the next step is to fix what failed (get consent, pass Fair Housing, apply brand

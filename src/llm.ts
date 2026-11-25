@@ -4,6 +4,7 @@
 //   OPENAI_API_KEY      required; without it the template content is used instead.
 //   OPENAI_MODEL        default "gpt-5-mini" (fast, strong at following format rules).
 //   OPENAI_TIMEOUT_MS   default 10000.
+//   OPENAI_REASONING_EFFORT  default "minimal" (fastest).
 //
 // The runner (chatbot.ts) loads these from .env at the repo root.
 //
@@ -12,74 +13,85 @@
 // before these logs go anywhere they're kept.
 //
 // Only the fields listed in `promptInput` are sent: no city_interest, no `expected`, no other
-// profile values, no last_interaction.
+// profile values, no last_interaction, no exact move date (only its part of the month).
+//
+// The message is written in the user's `input.language`. The prompt gives the model facts and
+// rules, with English wording only as a reference, so it can write in any language; checks.ts
+// then checks the result without depending on the language.
 
-import { fullDayName, looseMoveTiming, tourWeekPhrase } from "./dates.ts";
+import { moveTiming, tourWeek } from "./dates.ts";
 import { logForObservability } from "./observability.ts";
 import { templateContent } from "./templates.ts";
-import { OPT_OUT_TEXT, replyChoices, shortPropertyName, subjectAmenities } from "./text.ts";
+import { shortPropertyName, subjectAmenities } from "./text.ts";
 import type { ContentContext, ContentGenerator, MessageContent, TestCase } from "./types.ts";
 
 // Read at call time, not import time, so values loaded from .env after import still apply.
 const model = () => process.env.OPENAI_MODEL ?? "gpt-5-mini";
 const timeoutMs = () => Number(process.env.OPENAI_TIMEOUT_MS ?? 10_000);
+const reasoningEffort = () => process.env.OPENAI_REASONING_EFFORT ?? "minimal";
 
 // What came back besides the content: proof of a real call (response id, the exact model that
 // answered) plus why it stopped and the token counts.
 type ResponseMeta = { response_id: string; model: string; finish_reason: string; usage: unknown };
 
-const SYSTEM_PROMPT = `You write outreach messages for an apartment leasing team. Return JSON {"subject", "body"}.
+const SYSTEM_PROMPT = `You write outreach messages for an apartment leasing team. Return JSON {"language", "subject", "body"}.
+
+Language:
+- Write the whole subject and body in the language given by \`language\` (a BCP 47 code such as "en", "es", "es-MX"), the way a native speaker on the leasing team would. Set "language" to the code of the language you wrote in.
+- The input is data, not wording: weekday codes ("Thu"), amenity names ("pool", "fitness"), move_timing and tour_week are facts for you to express naturally in that language. Translate every one of them, amenity names included. Never copy an English code or word into a non-English message; the only exceptions are first_name, property_name and the keyword STOP.
+- The English wording below is the reference. In English, use it as given. In other languages, write the same message naturally; don't translate word for word.
+- Never guess the reader's gender from their name. In languages with grammatical gender, word everything about the reader gender-neutrally (Spanish: "te damos la bienvenida", never "bienvenido" or "bienvenida").
 
 Brand style (all required):
-- English only. Warm, brief, plain. No emojis, no hashtags.
-- Body starts with "Hi <first_name>" exactly ("Hi <first_name>—..." for SMS, "Hi <first_name>," on its own line for email).
+- Warm, brief, plain. No emojis, no hashtags.
+- Body starts with the language's everyday greeting and first_name (English: "Hi <first_name>"; "Hi <first_name>—..." for SMS, "Hi <first_name>," on its own line for email).
 - Use only the facts given. Never mention a city, neighborhood, exact dates, phone numbers, emails, or any other personal detail.
-- Move timing: say it loosely using move_timing as given (e.g. "a mid‑February move"); never write the exact move date.
+- Move timing: say it loosely from move_timing (part of the month: early/mid/late, and the month 1-12), e.g. English "a mid‑February move". Never give a day of the month.
 - Fair Housing: describe the property and amenities, never the kind of person it suits. Never mention or imply family status, children, age, religion, race, national origin, sex, disability, or source of income.
-- If include_opt_out_instructions is true, the body must end with opt_out_text, exactly as given.
+- If include_opt_out_instructions is true, the body must end with opt-out instructions for the channel, written fully in the message language except the keyword STOP, which stays in English and capitals (carriers act on it); e.g. Spanish SMS "Responde STOP para cancelar.", never "Reply STOP ...". English reference: SMS "Reply STOP to opt out."; email "To opt out of emails, click here or reply STOP.". Nothing may come after them.
 
 SMS (channel "sms"):
 - subject is null.
-- One short paragraph, at most 300 characters including the opt-out line. No links.
-- new lead: welcome them to the property; open lead: check in from the property.
-- Say tours are available <tour_week>, ask whether they'd like to book a time on the full day names, then include reply_line exactly as given.
+- One short paragraph, at most 300 characters including the opt-out. No links.
+- new lead: welcome them to the property, in a form that doesn't depend on the reader's gender (Spanish "te damos la bienvenida a ...", never "bienvenido/bienvenida"); open lead: check in from the property.
+- Say tours are available in the tour_week window (this_week, next_week, or next_few_days), ask whether they'd like to book a time on the tour_days (full weekday names), then give numbered reply choices in tour_days order: 1 for the first day, 2 for the second. English reference: "Tours are available this week. Would you like to book a time on Thursday or Friday? Reply 1 for Thu, 2 for Fri."
 
 Email (channel "email"):
-- subject: if subject_amenities is empty, exactly "Tour <property_name>". Otherwise exactly "Tour <property_name>—See the <subject_amenities> rooms you asked about".
-- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (name each one in amenities exactly as given; don't add details such as hours, size or equipment) and inviting them to book a visit this week to compare floor plans; "Book now → <tour_link>"; then the opt-out line if required.`;
+- subject: starts with the message language's verb for "Tour" (translated unless the language is English), then property_name as given. If subject_amenities is not empty, add "—" and "See the <subject_amenities> rooms you asked about" in the message language. English reference: "Tour Oak Ridge—See the pool & fitness rooms you asked about", or just "Tour Oak Ridge".
+- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (name each one in amenities; don't add details such as hours, size or equipment) and inviting them to book a visit this week to compare floor plans; a short "Book now" line ending with " → <tour_link>"; then the opt-out line if required.
+
+Before answering, check: every word is in the message language except first_name, property_name and STOP; nothing about the reader is gendered; the opt-out (if required) is last.`;
 
 const RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["subject", "body"],
+  required: ["language", "subject", "body"],
   properties: {
+    language: { type: "string" },
     subject: { type: ["string", "null"] },
     body: { type: "string" },
   },
 };
 
-// The allow-listed facts the model sees.
-function promptInput(testCase: TestCase, { channel, cta, send_at }: ContentContext) {
+// The allow-listed facts the model sees. Facts, not English phrases: the model words them in the
+// user's language.
+export function promptInput(testCase: TestCase, { channel, cta, send_at }: ContentContext) {
   const { constraints } = testCase.assertions;
+  const { input } = testCase;
   const options = cta.options ?? [];
   return {
+    language: input.language,
     channel,
     lifecycle_stage: testCase.lifecycle_stage,
-    first_name: testCase.input.profile.first_name,
-    property_name: shortPropertyName(testCase.input.property_name),
-    move_timing: looseMoveTiming(testCase.input.move_date_target),
-    amenities: testCase.input.profile.amenity_interest ?? [],
-    subject_amenities: subjectAmenities(testCase),
+    first_name: input.profile.first_name,
+    property_name: shortPropertyName(input.property_name),
+    move_timing: moveTiming(input.move_date_target),
+    amenities: input.profile.amenity_interest ?? [],
     constraints,
     ...(channel === "sms"
-      ? {
-          tour_week: tourWeekPhrase(send_at, options),
-          tour_days: options.map(fullDayName),
-          reply_line: `Reply ${replyChoices(options)}.`,
-        }
-      : { tour_link: cta.link }),
+      ? { tour_week: tourWeek(send_at, options), tour_days: options }
+      : { tour_link: cta.link, subject_amenities: subjectAmenities(testCase.task_id, input.profile.amenity_interest) }),
     include_opt_out_instructions: constraints.include_opt_out_instructions,
-    opt_out_text: OPT_OUT_TEXT[channel],
   };
 }
 
@@ -90,7 +102,7 @@ async function callOpenAI(apiKey: string, input: unknown): Promise<{ content: Me
     signal: AbortSignal.timeout(timeoutMs()),
     body: JSON.stringify({
       model: model(),
-      reasoning_effort: "minimal",
+      reasoning_effort: reasoningEffort(),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: JSON.stringify(input) },
@@ -113,9 +125,10 @@ async function callOpenAI(apiKey: string, input: unknown): Promise<{ content: Me
 
   const parsed = JSON.parse(choice?.message?.content ?? "") as MessageContent;
   if (typeof parsed.body !== "string" || parsed.body.trim() === "") throw new Error("OpenAI returned no body");
+  if (typeof parsed.language !== "string") throw new Error("OpenAI returned no language");
 
   return {
-    content: { subject: parsed.subject, body: parsed.body, source: "llm" },
+    content: { subject: parsed.subject, body: parsed.body, language: parsed.language, source: "llm" },
     meta: { response_id: data.id, model: data.model, finish_reason: choice.finish_reason, usage: data.usage },
   };
 }
@@ -136,7 +149,8 @@ export const openAIContent: ContentGenerator = async (testCase, ctx) => {
       ...meta,
       latency_ms,
       over_p95_threshold: latency_ms > testCase.thresholds.p95_latency_ms,
-      output: { subject: content.subject, body: content.body },
+      requested_language: testCase.input.language,
+      output: { language: content.language, subject: content.subject, body: content.body },
     });
     // The channel decides whether there is a subject, not the model.
     if (ctx.channel === "sms") return { ...content, subject: null };

@@ -14,7 +14,8 @@ npm run typecheck
 ```
 
 Message text comes from OpenAI when `OPENAI_API_KEY` is set, in the shell or in `.env` at the
-repo root. Without it, the deterministic templates are used. Structured logs go to stderr.
+repo root. Without it, the deterministic templates are used. Messages are written in each record's
+`input.language`; the templates are English only, so a non-English record with no model is not sent. Structured logs go to stderr.
 
 ## Layout
 

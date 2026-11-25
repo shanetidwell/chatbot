@@ -21,31 +21,36 @@ export function addDays(date: string, days: number): string {
 // Weekdays
 // ---------------------------------------------------------------------------
 
-// Indexed like Date.getUTCDay(): 0 = Sunday.
+// Indexed like Date.getUTCDay(): 0 = Sunday. These are data values (cta.options), not display
+// text: weekdayName turns them into words in the message language.
 export const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const WEEKDAY_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 // 0 = Sunday ... 6 = Saturday.
 export function weekdayOf(date: string): number {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
 
-// "Thu" -> "Thursday". Anything unrecognized is returned as is.
-export function fullDayName(abbr: string): string {
+// "Thu" -> "Thursday" (en) / "jueves" (es). Anything unrecognized is returned as is.
+export function weekdayName(abbr: string, language: string): string {
   const i = WEEKDAY_ABBR.indexOf(abbr);
-  return i >= 0 ? WEEKDAY_FULL[i] : abbr;
+  if (i < 0) return abbr;
+  // 2024-01-07 was a Sunday, so day 7 + i has weekday i.
+  return new Intl.DateTimeFormat(language, { weekday: "long", timeZone: "UTC" }).format(Date.UTC(2024, 0, 7 + i));
 }
 
-// "this week" / "next week" for tour days offered after the send date (weeks start Monday).
+// Which week the tour days offered after the send date fall in (weeks start Monday). A code, not
+// a phrase: the templates and the language model each word it in the message language.
 // The days come right after the send date, so a day whose weekday comes later in the week than
 // the send day's is in the same week; any other is next week.
-export function tourWeekPhrase(sendAt: string, options: string[]): string {
+export type TourWeek = "this_week" | "next_week" | "next_few_days";
+
+export function tourWeek(sendAt: string, options: string[]): TourWeek {
   const mondayFirst = (day: number) => (day === 0 ? 7 : day); // Sunday is the last day of the week
   const sendDay = mondayFirst(weekdayOf(sendAt.slice(0, 10)));
   const sameWeek = options.map((o) => mondayFirst(WEEKDAY_ABBR.indexOf(o)) > sendDay);
-  if (sameWeek.every(Boolean)) return "this week";
-  if (sameWeek.every((x) => !x)) return "next week";
-  return "over the next few days";
+  if (sameWeek.every(Boolean)) return "this_week";
+  if (sameWeek.every((x) => !x)) return "next_week";
+  return "next_few_days";
 }
 
 // ---------------------------------------------------------------------------
@@ -100,21 +105,25 @@ function formatOffset(minutes: number): string {
 // Move timing
 // ---------------------------------------------------------------------------
 
-const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
+// Loose move timing as data: "2026-02-15" -> { part: "mid", month: 2 }. The exact date is never
+// shown; the templates and the language model word this in the message language
+// ("a mid‑February move", "mudarte a mediados de febrero").
+export type PartOfMonth = "early" | "mid" | "late";
+export type MoveTiming = { part: PartOfMonth; month: number };
 
-// "2026-02-15" -> "mid‑February". Loose timing only; the exact date is never shown.
-// (Uses a non-breaking hyphen to match the brand copy in the samples.)
-export function looseMoveTiming(moveDate: string): string {
+export function moveTiming(moveDate: string): MoveTiming {
   const [, month, day] = moveDate.split("-").map(Number);
-  return `${partOfMonth(day)}‑${MONTHS[month - 1]}`;
+  return { part: partOfMonth(day), month };
 }
 
 // Days 1–10 are "early", 11–20 "mid", 21+ "late".
-function partOfMonth(day: number): string {
+function partOfMonth(day: number): PartOfMonth {
   if (day <= 10) return "early";
   if (day <= 20) return "mid";
   return "late";
+}
+
+// 2 -> "February" (en) / "febrero" (es).
+export function monthName(month: number, language: string): string {
+  return new Intl.DateTimeFormat(language, { month: "long", timeZone: "UTC" }).format(Date.UTC(2024, month - 1, 1));
 }

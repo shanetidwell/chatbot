@@ -21,8 +21,13 @@ export function buildCta(testCase: TestCase, channel: SupportedChannel, sendAt: 
 }
 
 // "Oak Ridge Apartments" -> "https://oakridge.example/tour"
+// "Lomas del Río Apartments" -> "https://lomasdelrio.example/tour" (accents dropped, not the letter)
 function tourLink(propertyName: string): string {
-  const slug = shortPropertyName(propertyName).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const slug = shortPropertyName(propertyName)
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
   return `https://${slug}.example/tour`;
 }
 

@@ -7,14 +7,29 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { runChecks } from "../src/checks.ts";
+import { promptInput } from "../src/llm.ts";
 import { processInput as processWith } from "../src/processInput.ts";
 import { templateContent } from "../src/templates.ts";
 import { readTestCases } from "../src/testCases.ts";
-import type { NextMessage, ProcessResult, TestCase } from "../src/types.ts";
-import { longHorizonDay3, welcomeDay0 } from "./fixtures.ts";
+import type { ContentGenerator, NextMessage, ProcessResult, TestCase } from "../src/types.ts";
+import { longHorizonDay3, longHorizonDay3Es, welcomeDay0, welcomeDay0Es } from "./fixtures.ts";
 
 // The tests use the template generator: deterministic, and no network calls.
 const processInput = (testCase: TestCase) => processWith(testCase, templateContent);
+
+// Stands in for the language model: returns the given text as if the model wrote it, so
+// non-English messages can be tested without network calls.
+function fakeModel(content: { language: string; subject: string | null; body: string }): ContentGenerator {
+  return async () => ({ ...content, source: "llm" });
+}
+
+// A fake model that replays a record's expected subject and body, in the record's language.
+const replayExpected = (testCase: TestCase) =>
+  fakeModel({
+    language: testCase.input.language,
+    subject: testCase.expected.next_message?.subject ?? null,
+    body: testCase.expected.next_message?.body ?? "",
+  });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -251,27 +266,27 @@ describe("checks", async () => {
   const good = sent(await processInput(welcomeDay0)) as Extract<NextMessage, { channel: "sms" }>;
 
   test("a generated message passes all checks", async () => {
-    assert.deepEqual(runChecks(good, welcomeDay0), []);
+    assert.deepEqual(runChecks(good, welcomeDay0, "en"), []);
   });
 
   test("Fair Housing violation is caught", async () => {
     const bad = { ...good, body: good.body.replace("Tours are available", "Perfect for families! Tours are available") };
-    assert.deepEqual(runChecks(bad, welcomeDay0), ["fair_housing_check_passed"]);
+    assert.deepEqual(runChecks(bad, welcomeDay0, "en"), ["fair_housing_check_passed"]);
   });
 
   test("missing opt-out fails brand style", async () => {
     const bad = { ...good, body: good.body.replace(" Reply STOP to opt out.", "") };
-    assert.ok(runChecks(bad, welcomeDay0).includes("brand_style_applied"));
+    assert.ok(runChecks(bad, welcomeDay0, "en").includes("brand_style_applied"));
   });
 
   test("leaking city_interest fails no_pii_leak", async () => {
     const bad = { ...good, body: good.body.replace("Tours are", "Richardson, TX tours are") };
-    assert.ok(runChecks(bad, welcomeDay0).includes("no_pii_leak"));
+    assert.ok(runChecks(bad, welcomeDay0, "en").includes("no_pii_leak"));
   });
 
   test("leaking a phone number fails no_pii_leak", async () => {
     const bad = { ...good, body: good.body.replace("Tours are", "Call 214-555-0123. Tours are") };
-    assert.ok(runChecks(bad, welcomeDay0).includes("no_pii_leak"));
+    assert.ok(runChecks(bad, welcomeDay0, "en").includes("no_pii_leak"));
   });
 });
 
@@ -293,15 +308,15 @@ const sampleUrl = new URL("../data/sample.jsonl", import.meta.url);
 describe("sample.jsonl", async () => {
   const records = await readTestCases(sampleUrl);
 
-  test("has the two records, identical to the typed copies in fixtures.ts", async () => {
-    assert.equal(records.length, 2);
-    assert.deepEqual(records[0], welcomeDay0);
-    assert.deepEqual(records[1], longHorizonDay3);
+  test("has the four records, identical to the typed copies in fixtures.ts", async () => {
+    assert.deepEqual(records, [welcomeDay0, longHorizonDay3, welcomeDay0Es, longHorizonDay3Es]);
   });
 
   for (const record of records) {
-    test(`${record.task_id}: everything but subject/body matches expected`, async () => {
-      const result = await processInput(record);
+    // Templates are English only; other languages need the (here: fake) model.
+    const generate = record.input.language === "en" ? templateContent : replayExpected(record);
+    test(`${record.task_id} (${record.input.language}): everything but subject/body matches expected`, async () => {
+      const result = await processWith(record, generate);
       assert.deepEqual(result.next_action, record.expected.next_action);
       assert.equal(result.next_message === null, record.expected.next_message === null);
       if (record.expected.next_message) assertStructuralMatch(sent(result), record.expected.next_message);
@@ -397,7 +412,7 @@ describe("invariants", async () => {
               const msg = sent(await processInput(tc));
 
               assert.equal(msg.channel, channel, where);
-              assert.deepEqual(runChecks(msg, tc), [], where);
+              assert.deepEqual(runChecks(msg, tc, "en"), [], where);
 
               // send_at: right local date and hour, and the stated offset is the real one.
               const instant = new Date(msg.send_at);
@@ -448,7 +463,7 @@ describe("fixed bugs", async () => {
   test("describing accessibility features is allowed by Fair Housing", async () => {
     const good = sent(await processInput(welcomeDay0));
     const msg = { ...good, body: good.body.replace("Tours are available", "Wheelchair-accessible units available. Tours are available") };
-    assert.deepEqual(runChecks(msg, welcomeDay0), []);
+    assert.deepEqual(runChecks(msg, welcomeDay0, "en"), []);
   });
 
   // --- Property name shortening. ---
@@ -487,7 +502,7 @@ describe("fixed bugs", async () => {
   test("a partial city_interest leak ('Richardson' without ', TX') is caught", async () => {
     const good = sent(await processInput(welcomeDay0));
     const msg = { ...good, body: good.body.replace("Tours are", "Richardson tours are") };
-    assert.ok(runChecks(msg, welcomeDay0).includes("no_pii_leak"));
+    assert.ok(runChecks(msg, welcomeDay0, "en").includes("no_pii_leak"));
   });
 
   // --- Unsupported channel. ---
@@ -509,26 +524,26 @@ describe("fixes don't weaken the checks", async () => {
     const tc = variant(welcomeDay0, { input: { profile: { first_name: "Christian" } } });
     const good = sent(await processInput(tc));
     const bad = { ...good, body: good.body.replace("Tours are", "Adults only. Tours are") };
-    assert.deepEqual(runChecks(bad, tc), ["fair_housing_check_passed"]);
+    assert.deepEqual(runChecks(bad, tc, "en"), ["fair_housing_check_passed"]);
   });
 
   test("excluding people with disabilities is still caught", async () => {
     const good = sent(await processInput(welcomeDay0));
     const bad = { ...good, body: good.body.replace("Tours are", "No wheelchairs. Tours are") };
-    assert.deepEqual(runChecks(bad, welcomeDay0), ["fair_housing_check_passed"]);
+    assert.deepEqual(runChecks(bad, welcomeDay0, "en"), ["fair_housing_check_passed"]);
   });
 
   test("a full city_interest leak is still caught, in any case", async () => {
     const good = sent(await processInput(welcomeDay0));
     const bad = { ...good, body: good.body.replace("Tours are", "RICHARDSON, TX tours are") };
-    assert.ok(runChecks(bad, welcomeDay0).includes("no_pii_leak"));
+    assert.ok(runChecks(bad, welcomeDay0, "en").includes("no_pii_leak"));
   });
 
   test("a word that only contains the city isn't flagged (whole-word match)", async () => {
     const tc = variant(welcomeDay0, { input: { profile: { city_interest: "Plano, TX" } } });
     const good = sent(await processInput(tc));
     const msg = { ...good, body: good.body.replace("Tours are", "Our pianoplanos are tuned. Tours are") };
-    assert.deepEqual(runChecks(msg, tc), []);
+    assert.deepEqual(runChecks(msg, tc, "en"), []);
   });
 
   test("a property in the same city as city_interest can still be named", async () => {
@@ -576,12 +591,6 @@ describe("spec questions", async () => {
       assert.notDeepEqual((await processInput(tc)).next_action, { type: "follow_up_in_days", value: 0 });
     });
 
-  test("non-English language is not sent in English",
-    { todo: "spec says English only for now; code ignores input.language" }, async () => {
-      const tc = variant(welcomeDay0, { input: { language: "es" } });
-      assert.equal((await processInput(tc)).next_message, null);
-    });
-
   test("task_id without _dayN is blocked rather than throwing",
     { todo: "currently throws" }, async () => {
       const tc = variant(welcomeDay0, { task_id: "prospect_welcome" });
@@ -594,4 +603,90 @@ describe("spec questions", async () => {
       tc.assertions.required_states.push("legal_review");
       await assert.doesNotReject(() => processInput(tc));
     });
+});
+
+// ---------------------------------------------------------------------------
+// Language: the model writes in input.language; the checks don't depend on it.
+// ---------------------------------------------------------------------------
+
+describe("language", async () => {
+  test("Spanish SMS from the model is sent as written", async () => {
+    const result = await processWith(welcomeDay0Es, replayExpected(welcomeDay0Es));
+    assert.deepEqual(result, welcomeDay0Es.expected);
+  });
+
+  test("Spanish email from the model is sent as written (accented property name in the link)", async () => {
+    const result = await processWith(longHorizonDay3Es, replayExpected(longHorizonDay3Es));
+    assert.deepEqual(result, longHorizonDay3Es.expected);
+    assert.equal(sent(result).cta.link, "https://lomasdelrio.example/tour");
+  });
+
+  test("model unavailable for a Spanish user -> English template is not sent", async () => {
+    // processInput's default generator falls back to templates; the tests' wrapper always uses them.
+    assert.deepEqual(await processInput(welcomeDay0Es), {
+      next_message: null,
+      next_action: { type: "resolve_failed_checks", failed_checks: ["language_matched"] },
+    });
+  });
+
+  test("model answers in English for a Spanish user -> not sent", async () => {
+    const english = fakeModel({ language: "en", subject: null, body: welcomeDay0.expected.next_message!.body.replace("Taylor", "Sofía") });
+    const result = await processWith(welcomeDay0Es, english);
+    assert.equal(result.next_message, null);
+    assert.ok("failed_checks" in result.next_action && result.next_action.failed_checks.includes("language_matched"));
+  });
+
+  test("regional codes match their language (es-MX message for an es user, and back)", async () => {
+    const tc = variant(welcomeDay0Es, { input: { language: "es-MX" } });
+    const body = welcomeDay0Es.expected.next_message!.body;
+    assert.ok((await processWith(tc, fakeModel({ language: "es", subject: null, body }))).next_message);
+    assert.ok((await processWith(welcomeDay0Es, fakeModel({ language: "es-MX", subject: null, body }))).next_message);
+  });
+
+  test("Spanish opt-out must keep the STOP keyword", async () => {
+    const good = welcomeDay0Es.expected.next_message!;
+    const bad = { ...good, body: good.body.replace("Responde STOP para cancelar.", "Responde BAJA para cancelar.") };
+    assert.deepEqual(runChecks(bad, welcomeDay0Es, "es"), ["brand_style_applied"]);
+  });
+
+  test("Spanish opt-out must come last", async () => {
+    const good = welcomeDay0Es.expected.next_message!;
+    const bad = { ...good, body: `${good.body} ¡Hasta pronto!` };
+    assert.deepEqual(runChecks(bad, welcomeDay0Es, "es"), ["brand_style_applied"]);
+  });
+
+  test("Spanish SMS must number the reply choices", async () => {
+    const good = welcomeDay0Es.expected.next_message!;
+    const bad = { ...good, body: good.body.replace("Responde 1 para jueves, 2 para viernes. ", "") };
+    assert.deepEqual(runChecks(bad, welcomeDay0Es, "es"), ["brand_style_applied"]);
+  });
+
+  test("Spanish message must greet by first name (accents included)", async () => {
+    const good = welcomeDay0Es.expected.next_message!;
+    const bad = { ...good, body: good.body.replace("Hola Sofía,", "Hola,") };
+    assert.deepEqual(runChecks(bad, welcomeDay0Es, "es"), ["brand_style_applied"]);
+  });
+
+  test("leaking city_interest in Spanish still fails no_pii_leak", async () => {
+    const good = welcomeDay0Es.expected.next_message!;
+    const bad = { ...good, body: good.body.replace("Hay visitas", "En San Antonio hay visitas") };
+    assert.ok(runChecks(bad, welcomeDay0Es, "es").includes("no_pii_leak"));
+  });
+
+  test("the model gets facts, not English phrases, plus the language", async () => {
+    const sms = promptInput(welcomeDay0Es, {
+      channel: "sms",
+      send_at: "2025-12-16T09:00:00-06:00",
+      cta: { type: "schedule_tour", options: ["Thu", "Fri"] },
+    });
+    assert.equal(sms.language, "es");
+    assert.ok("tour_week" in sms);
+    assert.equal(sms.tour_week, "this_week");
+    assert.deepEqual(sms.tour_days, ["Thu", "Fri"]);
+    assert.deepEqual(sms.move_timing, { part: "early", month: 3 });
+    const sent = JSON.stringify(sms);
+    assert.ok(!sent.includes("San Antonio"), "no city_interest");
+    assert.ok(!sent.includes("2026-03-05"), "no exact move date");
+    assert.ok(!/Reply|opt out|Thursday|this week/.test(sent), `no English wording: ${sent}`);
+  });
 });

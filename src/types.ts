@@ -53,7 +53,7 @@ export type TestCase = {
     move_date_target: string; // "YYYY-MM-DD"
     last_interaction: string; // ISO-8601 UTC timestamp
     timezone: string; // IANA zone, e.g. "America/Chicago"
-    language: string; // e.g. "en"
+    language: string; // BCP 47, e.g. "en", "es", "es-MX"
     profile: {
       first_name: string;
       city_interest?: string;
@@ -82,15 +82,17 @@ export type TestCase = {
   };
 };
 
-// Checks that gate sending: the required_states plus the no-PII rule.
+// Checks that gate sending: the required_states, the no-PII rule, and that the message is in the
+// user's language.
 export type CheckName =
+  | "language_matched"
   | "consent_verified"
   | "fair_housing_check_passed"
   | "brand_style_applied"
   | "no_pii_leak";
 
 // When a check fails we don't send and don't advance; instead the next step is to fix what failed
-// (get consent, pass Fair Housing, apply brand style, remove PII).
+// (get consent, pass Fair Housing, apply brand style, remove PII, write it in the user's language).
 export type BlockedAction = { type: "resolve_failed_checks"; failed_checks: CheckName[] };
 
 // What processInput returns: the same shape as `expected`, plus the blocked case.
@@ -106,7 +108,8 @@ export type ProcessResult = {
 // ---------------------------------------------------------------------------
 
 // `source` says which generator actually wrote it (the OpenAI one falls back to templates).
-export type MessageContent = { subject: string | null; body: string; source: "llm" | "template" };
+// `language` is the language it was written in (BCP 47); the templates are English only.
+export type MessageContent = { subject: string | null; body: string; language: string; source: "llm" | "template" };
 
 // What's already decided before content is written.
 export type ContentContext = { channel: SupportedChannel; send_at: string; cta: Cta };

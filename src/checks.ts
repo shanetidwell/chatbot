@@ -1,22 +1,30 @@
 // Checks that gate sending (spec step 6): the required_states (consent, Fair Housing, brand
-// style) plus the no-PII rule. runChecks returns the names of the checks that failed.
+// style), the no-PII rule, and that the message is in the user's language. runChecks returns the
+// names of the checks that failed.
+//
+// Messages can be in any language, so brand style and no-PII check things that don't depend on
+// it (first name, the STOP keyword, reply numbers, links, length, profile values). Fair Housing
+// is the exception: its phrase list is English, so for other languages it relies on the
+// prompt's Fair Housing rules.
 
 import { hasConsent } from "./channel.ts";
 import { logForObservability } from "./observability.ts";
-import { OPT_OUT_TEXT, replyChoices, shortPropertyName, SMS_MAX_LENGTH } from "./text.ts";
+import { OPT_OUT_KEYWORD, primaryLanguage, shortPropertyName, SMS_MAX_LENGTH } from "./text.ts";
 import type { CheckName, NextMessage, TestCase } from "./types.ts";
 
-export function runChecks(message: NextMessage, testCase: TestCase): CheckName[] {
+// `writtenIn` is the language the content was written in (MessageContent.language).
+export function runChecks(message: NextMessage, testCase: TestCase, writtenIn: string): CheckName[] {
   const { required_states, constraints } = testCase.assertions;
   const texts = [message.subject ?? "", message.body];
   const checks: Record<CheckName, () => boolean> = {
+    language_matched: () => primaryLanguage(writtenIn) === primaryLanguage(testCase.input.language),
     consent_verified: () => hasConsent(testCase, message.channel),
     fair_housing_check_passed: () => passesFairHousing(texts, testCase),
     brand_style_applied: () => passesBrandStyle(message, testCase),
     no_pii_leak: () => passesNoPii(texts, testCase),
   };
 
-  const toRun = [...required_states] as CheckName[];
+  const toRun = ["language_matched", ...required_states] as CheckName[];
   if (constraints.no_pii_leak) toRun.push("no_pii_leak");
 
   const failed = toRun.filter((name) => {
@@ -72,25 +80,48 @@ function logMaskingApplied(texts: string[], masked: string[], testCase: TestCase
 // Brand style
 // ---------------------------------------------------------------------------
 
-// Greets by first name, ends with the opt-out line when required, and fits the channel's format:
-// SMS is short, has no subject or links, and lists the reply options; email has a "Tour ..."
-// subject and the tour link in the body.
+// Greets by first name, ends with the opt-out instructions when required, and fits the channel's
+// format: SMS is short, has no subject or links, and numbers the reply options; email has a
+// subject naming the property and the tour link in the body. None of this depends on the
+// message language.
 function passesBrandStyle(message: NextMessage, testCase: TestCase): boolean {
-  const firstName = testCase.input.profile.first_name;
+  const failed = brandStyleFailures(message, testCase);
+  if (failed.length > 0) logForObservability(testCase.task_id, "brand_style_failed", { rules: failed });
+  return failed.length === 0;
+}
+
+function brandStyleFailures(message: NextMessage, testCase: TestCase): string[] {
   const { body, cta } = message;
-  if (!body.startsWith(`Hi ${firstName}`)) return false;
-  if (testCase.assertions.constraints.include_opt_out_instructions) {
-    if (!body.endsWith(OPT_OUT_TEXT[message.channel])) return false;
+  const failed: string[] = [];
+  if (!greetsByFirstName(body, testCase.input.profile.first_name)) failed.push("greeting");
+  if (testCase.assertions.constraints.include_opt_out_instructions && !endsWithOptOut(body, message.channel)) {
+    failed.push("opt_out_last");
   }
   if (message.channel === "sms") {
-    return (
-      message.subject === null &&
-      body.length <= SMS_MAX_LENGTH &&
-      !/https?:\/\//.test(body) &&
-      body.includes(replyChoices(cta.options ?? []))
-    );
+    if (message.subject !== null) failed.push("sms_subject");
+    if (body.length > SMS_MAX_LENGTH) failed.push("sms_length");
+    if (/https?:\/\//.test(body)) failed.push("sms_link");
+    if (!(cta.options ?? []).every((_, i) => new RegExp(`(?<!\\d)${i + 1}(?!\\d)`).test(body))) failed.push("sms_reply_numbers");
+  } else {
+    if (!message.subject.includes(shortPropertyName(testCase.input.property_name))) failed.push("subject_property");
+    if (!cta.link || !body.includes(cta.link)) failed.push("email_link");
   }
-  return message.subject.startsWith("Tour ") && !!cta.link && body.includes(cta.link);
+  return failed;
+}
+
+// The first name comes right after a short greeting at the very start ("Hi Taylor", "Hola Sofía",
+// "Bonjour Sofía"), as a whole word.
+function greetsByFirstName(body: string, firstName: string): boolean {
+  const opening = body.trimStart().slice(0, 20 + firstName.length);
+  return new RegExp(`(^|[^\\p{L}])${escapeRegExp(firstName)}($|[^\\p{L}])`, "u").test(opening);
+}
+
+// The opt-out keyword is in the last sentence (SMS) or last line (email), in any language:
+// "Reply STOP to opt out." / "Responde STOP para cancelar."
+function endsWithOptOut(body: string, channel: NextMessage["channel"]): boolean {
+  const trimmed = body.trim();
+  const last = channel === "email" ? trimmed.split("\n").pop()! : trimmed.split(/(?<=[.!?])\s+/).pop()!;
+  return new RegExp(`\\b${OPT_OUT_KEYWORD}\\b`).test(last);
 }
 
 // ---------------------------------------------------------------------------
