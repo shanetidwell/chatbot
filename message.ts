@@ -1,4 +1,4 @@
-// Message content: subject and body from templates filled in with the input.
+// Message content: subject and body. Templates here; the OpenAI generator is in llm.ts.
 
 import { shortPropertyName } from "./actions.ts";
 import { looseMoveTiming } from "./dates.ts";
@@ -52,7 +52,7 @@ const WEEKDAY_INDEX: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, 
 // "this week" / "next week" for the SMS tour days, relative to the send date (weeks start Monday).
 // The options are the days right after the send date, so a day whose weekday comes after the
 // send day's weekday is in the same week; any other is next week.
-function tourWeekPhrase(sendAt: string, options: string[]): string {
+export function tourWeekPhrase(sendAt: string, options: string[]): string {
   const sendDay = new Date(`${sendAt.slice(0, 10)}T00:00:00Z`).getUTCDay() || 7;
   const sameWeek = options.map((o) => (WEEKDAY_INDEX[o] ?? 0) > sendDay);
   if (sameWeek.every(Boolean)) return "this week";
@@ -96,6 +96,35 @@ export function buildBody(input: BodyInput): string {
       : `${timing}, book a visit this week to compare floor plans.`;
   return [`Hi ${input.first_name},`, pitch, `Book now → ${input.cta.link}`].join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Content generators: subject + raw body for the chosen channel. processInput adds the opt-out
+// line and runs the checks. openAIContent (llm.ts) is the default; templateContent is the
+// deterministic fallback, and what the tests use.
+// ---------------------------------------------------------------------------
+
+// `source` says which generator actually wrote it (the OpenAI one falls back to templates).
+export type MessageContent = { subject: string | null; body: string; source: "llm" | "template" };
+export type ContentContext = { channel: "sms" | "email"; send_at: string; cta: Cta };
+export type ContentGenerator = (testCase: TestCase, ctx: ContentContext) => Promise<MessageContent>;
+
+export const templateContent: ContentGenerator = async (testCase, { channel, send_at, cta }) => {
+  const { profile } = testCase.input;
+  return {
+    source: "template",
+    subject: buildSubject(testCase, channel),
+    body: buildBody({
+      channel,
+      lifecycle_stage: testCase.lifecycle_stage,
+      first_name: profile.first_name,
+      property_name: testCase.input.property_name,
+      amenity_interest: profile.amenity_interest ?? [],
+      move_date_target: testCase.input.move_date_target,
+      send_at,
+      cta,
+    }),
+  };
+};
 
 // Template body, then the exact opt-out line when the constraints ask for it.
 export function finishBody(body: string, testCase: TestCase, channel: "sms" | "email"): string {
