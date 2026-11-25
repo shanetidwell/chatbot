@@ -5,7 +5,7 @@
 // block, and anything else not listed can't reach the message.
 
 import { fullDayName, looseMoveTiming, tourWeekPhrase } from "./dates.ts";
-import { amenityPhrases, buildSubject, joinList, replyChoices, shortPropertyName } from "./text.ts";
+import { buildSubject, joinList, replyChoices, shortPropertyName } from "./text.ts";
 import type { ContentGenerator, Cta, LifecycleStage, SupportedChannel } from "./types.ts";
 
 type BodyInput = {
@@ -57,14 +57,14 @@ function smsBody(input: BodyInput): string {
 }
 
 // Hi Taylor,
-// Since you’re planning a mid‑February move, here’s a quick look at our pool and 24/7 fitness
-// center. Book a visit this week to compare floor plans.
+// Since you’re planning a mid‑February move, here’s a quick look at our pool and fitness.
+// Book a visit this week to compare floor plans.
 // Book now → https://oakridge.example/tour
 function emailBody(input: BodyInput): string {
   const timing = `Since you’re planning a ${looseMoveTiming(input.move_date_target)} move`;
   const pitch =
     input.amenity_interest.length > 0
-      ? `${timing}, here’s a quick look at our ${joinList(amenityPhrases(input.amenity_interest), " and ")}. Book a visit this week to compare floor plans.`
+      ? `${timing}, here’s a quick look at our ${joinList(input.amenity_interest, " and ")}. Book a visit this week to compare floor plans.`
       : `${timing}, book a visit this week to compare floor plans.`;
   return [`Hi ${input.first_name},`, pitch, `Book now → ${input.cta.link}`].join("\n");
 }

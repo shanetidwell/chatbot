@@ -109,6 +109,12 @@ const MONTHS = [
 // (Uses a non-breaking hyphen to match the brand copy in the samples.)
 export function looseMoveTiming(moveDate: string): string {
   const [, month, day] = moveDate.split("-").map(Number);
-  const part = day <= 10 ? "early" : day <= 20 ? "mid" : "late";
-  return `${part}‑${MONTHS[month - 1]}`;
+  return `${partOfMonth(day)}‑${MONTHS[month - 1]}`;
+}
+
+// Days 1–10 are "early", 11–20 "mid", 21+ "late".
+function partOfMonth(day: number): string {
+  if (day <= 10) return "early";
+  if (day <= 20) return "mid";
+  return "late";
 }

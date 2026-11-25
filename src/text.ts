@@ -18,16 +18,6 @@ export function joinList(items: string[], pairJoiner: string): string {
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
-// How each amenity is described in a body. Unlisted amenities are used as is.
-const AMENITY_PHRASE: Record<string, string> = {
-  fitness: "24/7 fitness center",
-};
-
-// ["pool", "fitness"] -> ["pool", "24/7 fitness center"]
-export function amenityPhrases(amenities: string[]): string[] {
-  return amenities.map((a) => AMENITY_PHRASE[a] ?? a);
-}
-
 // ---------------------------------------------------------------------------
 // Subject (email only)
 // ---------------------------------------------------------------------------

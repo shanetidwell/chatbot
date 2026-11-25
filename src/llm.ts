@@ -17,7 +17,7 @@
 import { fullDayName, looseMoveTiming, tourWeekPhrase } from "./dates.ts";
 import { logForObservability } from "./observability.ts";
 import { templateContent } from "./templates.ts";
-import { amenityPhrases, OPT_OUT_TEXT, replyChoices, shortPropertyName, subjectAmenities } from "./text.ts";
+import { OPT_OUT_TEXT, replyChoices, shortPropertyName, subjectAmenities } from "./text.ts";
 import type { ContentContext, ContentGenerator, MessageContent, TestCase } from "./types.ts";
 
 // Read at call time, not import time, so values loaded from .env after import still apply.
@@ -46,7 +46,7 @@ SMS (channel "sms"):
 
 Email (channel "email"):
 - subject: if subject_amenities is empty, exactly "Tour <property_name>". Otherwise exactly "Tour <property_name>—See the <subject_amenities> rooms you asked about".
-- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (use amenity_phrases) and inviting them to book a visit this week to compare floor plans; "Book now → <tour_link>"; then the opt-out line if required.`;
+- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (name each one in amenities exactly as given; don't add details such as hours, size or equipment) and inviting them to book a visit this week to compare floor plans; "Book now → <tour_link>"; then the opt-out line if required.`;
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -68,7 +68,7 @@ function promptInput(testCase: TestCase, { channel, cta, send_at }: ContentConte
     first_name: testCase.input.profile.first_name,
     property_name: shortPropertyName(testCase.input.property_name),
     move_timing: looseMoveTiming(testCase.input.move_date_target),
-    amenity_phrases: amenityPhrases(testCase.input.profile.amenity_interest ?? []),
+    amenities: testCase.input.profile.amenity_interest ?? [],
     subject_amenities: subjectAmenities(testCase),
     constraints,
     ...(channel === "sms"
@@ -107,10 +107,13 @@ async function callOpenAI(apiKey: string, input: unknown): Promise<{ content: Me
     throw new Error(`OpenAI HTTP ${res.status}${code ? ` ${code}` : ""}`);
   }
   const data = (await res.json()) as any;
+  
   const choice = data.choices?.[0];
   if (choice?.message?.refusal) throw new Error("OpenAI refused");
+
   const parsed = JSON.parse(choice?.message?.content ?? "") as MessageContent;
   if (typeof parsed.body !== "string" || parsed.body.trim() === "") throw new Error("OpenAI returned no body");
+
   return {
     content: { subject: parsed.subject, body: parsed.body, source: "llm" },
     meta: { response_id: data.id, model: data.model, finish_reason: choice.finish_reason, usage: data.usage },
