@@ -3,6 +3,7 @@
 // Colors: input = cyan, output = green (matches expected) or red (mismatch).
 // Set NO_COLOR=1 to turn colors off.
 
+import { logForObservability } from "./observability.ts";
 import { processInput } from "./processInput.ts";
 import { readTestCases } from "./testCases.ts";
 
@@ -52,7 +53,8 @@ async function main(): Promise<void> {
 
     try {
       const result = processInput(testCase);
-      const matches = diff(expected, result).length === 0;
+      const differences = diff(expected, result);
+      const matches = differences.length === 0;
       const color = matches ? green : red;
 
       console.log(color(bold("output:")));
@@ -63,8 +65,13 @@ async function main(): Promise<void> {
         console.log(bold(green("✔ MATCH")));
       } else {
         console.log(bold(red("✘ MISMATCH")));
+        // Paths only: the values can hold message text, so leave them to the console output above.
+        logForObservability(testCase.task_id, "output_mismatch", {
+          mismatched_fields: differences.map((d) => d.path),
+        });
       }
     } catch (err) {
+      logForObservability(testCase.task_id, "processing_error", { error: (err as Error).message });
       console.log(bold(red("✘ ERROR")));
       console.log(red((err as Error).stack ?? String(err)));
     }

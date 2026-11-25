@@ -2,6 +2,7 @@
 
 import { shortPropertyName } from "./actions.ts";
 import { OPT_OUT_TEXT } from "./message.ts";
+import { logForObservability } from "./observability.ts";
 import type { BlockedAction, Channel, CheckName, NextMessage, ProcessResult, TestCase } from "./types.ts";
 
 export function hasConsent(testCase: TestCase, channel: Channel): boolean {
@@ -46,9 +47,18 @@ function maskInputValues(text: string, testCase: TestCase): string {
 }
 
 function passesFairHousing(texts: string[], testCase: TestCase): boolean {
-  return texts
-    .map((t) => maskInputValues(t, testCase))
-    .every((t) => FAIR_HOUSING_PATTERNS.every((p) => !p.test(t)));
+  const masked = texts.map((t) => maskInputValues(t, testCase));
+  logMaskingApplied(texts, masked, testCase);
+  const matched = FAIR_HOUSING_PATTERNS.filter((p) => masked.some((t) => p.test(t))).map((p) => p.source);
+  if (matched.length > 0) logForObservability(testCase.task_id, "fair_housing_violation", { patterns: matched });
+  return matched.length === 0;
+}
+
+// How often masking actually changed the text. A high rate means templates pull in input values
+// that look like risky phrases more than expected.
+function logMaskingApplied(texts: string[], masked: string[], testCase: TestCase): void {
+  const changed = texts.filter((t, i) => t !== masked[i]).length;
+  if (changed > 0) logForObservability(testCase.task_id, "input_values_masked", { texts_changed: changed });
 }
 
 function passesBrandStyle(message: NextMessage, testCase: TestCase): boolean {
@@ -84,16 +94,18 @@ function passesNoPii(texts: string[], testCase: TestCase): boolean {
   const forbiddenWords = [...new Set(words)]
     .filter((w) => w.length >= 3)
     .map((w) => new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(w)}($|[^\\p{L}\\p{N}])`, "iu"));
-  const forbiddenStrings = [move_date_target, last_interaction].filter((v) => v.trim().length > 0);
-  return texts.every((raw) => {
+  // Categories only: logging the matched value would itself leak the PII.
+  const categories = new Set<string>();
+  for (const raw of texts) {
     const t = maskInputValues(raw, testCase);
-    return (
-      forbiddenWords.every((re) => !re.test(t)) &&
-      forbiddenStrings.every((f) => !t.includes(f)) &&
-      !EMAIL_PATTERN.test(t) &&
-      !PHONE_PATTERN.test(t)
-    );
-  });
+    if (forbiddenWords.some((re) => re.test(t))) categories.add("profile_value");
+    if (move_date_target.trim() && t.includes(move_date_target)) categories.add("move_date_target");
+    if (last_interaction.trim() && t.includes(last_interaction)) categories.add("last_interaction");
+    if (EMAIL_PATTERN.test(t)) categories.add("email");
+    if (PHONE_PATTERN.test(t)) categories.add("phone");
+  }
+  if (categories.size > 0) logForObservability(testCase.task_id, "pii_leak_detected", { categories: [...categories] });
+  return categories.size === 0;
 }
 
 export function runChecks(message: NextMessage, testCase: TestCase): CheckName[] {
@@ -107,11 +119,16 @@ export function runChecks(message: NextMessage, testCase: TestCase): CheckName[]
   };
   const toRun = [...required_states] as CheckName[];
   if (constraints.no_pii_leak) toRun.push("no_pii_leak");
-  return toRun.filter((name) => {
+  const failed = toRun.filter((name) => {
     const check = results[name];
-    if (!check) throw new Error(`Unknown required state "${name}"`);
+    if (!check) {
+      logForObservability(testCase.task_id, "unknown_required_state", { required_state: name });
+      throw new Error(`Unknown required state "${name}"`);
+    }
     return !check();
   });
+  logForObservability(testCase.task_id, "checks_ran", { ran: toRun, failed });
+  return failed;
 }
 
 export function blocked(failed: CheckName[]): ProcessResult {

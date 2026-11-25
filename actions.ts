@@ -2,6 +2,7 @@
 
 import { hasConsent } from "./checks.ts";
 import { addDays, dayOffset } from "./dates.ts";
+import { logForObservability } from "./observability.ts";
 import type { Channel, Cta, NextAction, TestCase } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,23 @@ function isSupported(channel: Channel): channel is SupportedChannel {
 }
 
 export function pickChannel(testCase: TestCase): SupportedChannel | null {
-  return testCase.channel_preferences.filter(isSupported).find((c) => hasConsent(testCase, c)) ?? null;
+  const picked = testCase.channel_preferences.filter(isSupported).find((c) => hasConsent(testCase, c)) ?? null;
+
+  // Every preference ahead of the one we picked was skipped; record why.
+  const preferences = testCase.channel_preferences;
+  const considered = picked ? preferences.slice(0, preferences.indexOf(picked)) : preferences;
+  const skipped = considered.map((channel) => ({
+    channel,
+    reason: !isSupported(channel) ? "unsupported" : "no_consent",
+  }));
+  logForObservability(testCase.task_id, "channel_selected", {
+    picked,
+    preferred: preferences[0] ?? null,
+    fell_back: picked !== null && picked !== preferences[0],
+    skipped,
+  });
+
+  return picked;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +71,10 @@ function tourOptions(sendAt: string): string[] {
 
 export function buildCta(testCase: TestCase, channel: Channel, sendAt: string): Cta {
   const primaryCta = testCase.assertions.constraints.primary_cta;
-  if (primaryCta !== "book_tour") throw new Error(`Unsupported primary_cta "${primaryCta}"`);
+  if (primaryCta !== "book_tour") {
+    logForObservability(testCase.task_id, "unsupported_primary_cta", { primary_cta: primaryCta });
+    throw new Error(`Unsupported primary_cta "${primaryCta}"`);
+  }
   return channel === "email"
     ? { type: "schedule_tour", link: tourLink(testCase.input.property_name) }
     : { type: "schedule_tour", options: tourOptions(sendAt) };
