@@ -35,6 +35,7 @@ type BodyInput = {
   property_name: string;
   amenity_interest: string[];
   move_date_target: string;
+  send_at: string;
   cta: Cta;
 };
 
@@ -45,6 +46,19 @@ const WEEKDAY_FULL: Record<string, string> = {
   Thu: "Thursday",
   Fri: "Friday",
 };
+
+const WEEKDAY_INDEX: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+
+// "this week" / "next week" for the SMS tour days, relative to the send date (weeks start Monday).
+// The options are the days right after the send date, so a day whose weekday comes after the
+// send day's weekday is in the same week; any other is next week.
+function tourWeekPhrase(sendAt: string, options: string[]): string {
+  const sendDay = new Date(`${sendAt.slice(0, 10)}T00:00:00Z`).getUTCDay() || 7;
+  const sameWeek = options.map((o) => (WEEKDAY_INDEX[o] ?? 0) > sendDay);
+  if (sameWeek.every(Boolean)) return "this week";
+  if (sameWeek.every((x) => !x)) return "next week";
+  return "over the next few days";
+}
 
 // How each amenity is described in a body. Unlisted amenities are used as-is.
 const AMENITY_PHRASE: Record<string, string> = {
@@ -70,7 +84,8 @@ export function buildBody(input: BodyInput): string {
       input.lifecycle_stage === "new"
         ? `Hi ${input.first_name}—welcome to ${name}!`
         : `Hi ${input.first_name}—checking in from ${name}.`;
-    return `${opener} Tours are available this week. Would you like to book a time on ${days}? Reply ${replies}.`;
+    const when = tourWeekPhrase(input.send_at, options);
+    return `${opener} Tours are available ${when}. Would you like to book a time on ${days}? Reply ${replies}.`;
   }
 
   // email

@@ -1,73 +1,77 @@
 // Run: npx tsx chatbot
+//
+// Colors: input = cyan, output = green (matches expected) or red (mismatch).
+// Set NO_COLOR=1 to turn colors off.
 
-import { pathToFileURL } from "node:url";
-import { buildCta, buildNextAction, pickChannel } from "./actions.ts";
-import { blocked, runChecks } from "./checks.ts";
-import { computeSendAt } from "./dates.ts";
-import { buildBody, buildSubject, finishBody } from "./message.ts";
+import { processInput } from "./processInput.ts";
 import { readTestCases } from "./testCases.ts";
-import type { NextMessage, ProcessResult, TestCase } from "./types.ts";
 
 // ---------------------------------------------------------------------------
-// processInput: the spec's steps, in the order it lists them.
+// Colors
 // ---------------------------------------------------------------------------
 
-export function processInput(testCase: TestCase): ProcessResult {
-  // 1. Channel. No consented channel means nothing can be sent yet.
-  const channel = pickChannel(testCase);
-  if (!channel) return blocked(["consent_verified"]);
-  if (channel === "voice") throw new Error("Voice messages are not supported yet");
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = (code: string) => (text: string) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text);
 
-  // 2-4. Timing, CTA, next action.
-  const send_at = computeSendAt(testCase);
-  const cta = buildCta(testCase, channel, send_at);
-  const nextAction = buildNextAction(testCase);
+const bold = paint("1");
+const red = paint("31");
+const green = paint("32");
+const magenta = paint("35");
+const cyan = paint("36");
 
-  // 5. Content.
-  const subject = buildSubject(testCase, channel);
-  const { profile } = testCase.input;
-  const rawBody = buildBody({
-    channel,
-    lifecycle_stage: testCase.lifecycle_stage,
-    first_name: profile.first_name,
-    property_name: testCase.input.property_name,
-    amenity_interest: profile.amenity_interest ?? [],
-    move_date_target: testCase.input.move_date_target,
-    cta,
-  });
-  const body = finishBody(rawBody, testCase, channel);
-  const message: NextMessage =
-    channel === "email"
-      ? { channel, send_at, subject: subject!, body, cta }
-      : { channel, send_at, subject: null, body, cta };
+const json = (value: unknown) => JSON.stringify(value, null, 2);
 
-  // 6. Checks. Any failure: don't send, don't advance.
-  const failed = runChecks(message, testCase);
-  if (failed.length > 0) return blocked(failed);
+// ---------------------------------------------------------------------------
+// Diff: every leaf path where actual and expected differ.
+// ---------------------------------------------------------------------------
 
-  // 7. Same shape as `expected`.
-  return { next_message: message, next_action: nextAction };
+type Difference = { path: string; expected: unknown; actual: unknown };
+
+function diff(expected: unknown, actual: unknown, path = ""): Difference[] {
+  const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object";
+  if (isObject(expected) && isObject(actual) && Array.isArray(expected) === Array.isArray(actual)) {
+    const keys = new Set([...Object.keys(expected), ...Object.keys(actual)]);
+    return [...keys].flatMap((key) => diff(expected[key], actual[key], path ? `${path}.${key}` : key));
+  }
+  return JSON.stringify(expected) === JSON.stringify(actual) ? [] : [{ path: path || "(root)", expected, actual }];
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const testCases = await readTestCases(new URL("./sample.jsonl", import.meta.url));
+  let passed = 0;
+
   for (const testCase of testCases) {
-    console.log(`\n=== ${testCase.task_id} ===`);
+    const { expected, ...input } = testCase;
+    console.log(bold(magenta(`\n=== ${testCase.task_id} ===`)));
+    console.log(cyan(bold("input:")));
+    console.log(cyan(json(input)));
+
     try {
       const result = processInput(testCase);
-      const matches = JSON.stringify(result) === JSON.stringify(testCase.expected);
-      console.log("actual:  ", JSON.stringify(result, null, 2));
-      if (!matches) console.log("expected:", JSON.stringify(testCase.expected, null, 2));
-      console.log(matches ? "MATCH" : "MISMATCH");
+      const matches = diff(expected, result).length === 0;
+      const color = matches ? green : red;
+
+      console.log(color(bold("output:")));
+      console.log(color(json(result)));
+
+      if (matches) {
+        passed++;
+        console.log(bold(green("✔ MATCH")));
+      } else {
+        console.log(bold(red("✘ MISMATCH")));
+      }
     } catch (err) {
-      console.error("error:   ", (err as Error).message);
+      console.log(bold(red("✘ ERROR")));
+      console.log(red((err as Error).stack ?? String(err)));
     }
   }
+
+  const summary = `\n${passed}/${testCases.length} matched`;
+  console.log(bold(passed === testCases.length ? green(summary) : red(summary)));
 }
 
-// Run main() only when this file is executed directly (not when imported, e.g. by a test).
-// Compare without the extension: `npx tsx chatbot` leaves argv[1] as ".../chatbot", not ".../chatbot.ts".
-const withoutExt = (href: string) => href.replace(/\.[cm]?[jt]s$/, "");
-if (process.argv[1] && withoutExt(import.meta.url) === withoutExt(pathToFileURL(process.argv[1]).href)) {
-  main();
-}
+main();

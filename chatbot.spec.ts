@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { processInput } from "./chatbot.ts";
+import { processInput } from "./processInput.ts";
 import { runChecks } from "./checks.ts";
 import { longHorizonDay3, readTestCases, welcomeDay0 } from "./testCases.ts";
 import type { NextMessage, ProcessResult, TestCase } from "./types.ts";
@@ -273,8 +273,8 @@ describe("checks", () => {
 // ===========================================================================
 // MORE SPECS: aimed at finding mistakes in the logic.
 //
-// Tests under "known bugs" assert the behavior the spec intends; they FAIL
-// against the current code on purpose. Tests marked `todo` are open spec
+// Tests under "fixed bugs" each reproduce a bug that was found and fixed;
+// they stay as regression tests. Tests marked `todo` are open spec
 // questions: they run and report, but don't fail the suite.
 // ===========================================================================
 
@@ -424,10 +424,10 @@ describe("invariants", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Known bugs: these assert intended behavior and currently FAIL.
+// Fixed bugs: regression tests for bugs these specs found.
 // ---------------------------------------------------------------------------
 
-describe("known bugs", () => {
+describe("fixed bugs", () => {
   // --- Fair Housing false positives: a single word anywhere blocks the whole message. ---
 
   test("first name 'Christian' is not a Fair Housing violation", () => {
@@ -492,6 +492,64 @@ describe("known bugs", () => {
     let result: ProcessResult | undefined;
     assert.doesNotThrow(() => { result = processInput(tc); });
     assert.equal(result!.next_message?.channel, "sms");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fixes above must not weaken the checks.
+// ---------------------------------------------------------------------------
+
+describe("fixes don't weaken the checks", () => {
+  test("a Fair Housing violation is still caught when the user is named Christian", () => {
+    const tc = variant(welcomeDay0, { input: { profile: { first_name: "Christian" } } });
+    const good = sent(processInput(tc));
+    const bad = { ...good, body: good.body.replace("Tours are", "Adults only. Tours are") };
+    assert.deepEqual(runChecks(bad, tc), ["fair_housing_check_passed"]);
+  });
+
+  test("excluding people with disabilities is still caught", () => {
+    const good = sent(processInput(welcomeDay0));
+    const bad = { ...good, body: good.body.replace("Tours are", "No wheelchairs. Tours are") };
+    assert.deepEqual(runChecks(bad, welcomeDay0), ["fair_housing_check_passed"]);
+  });
+
+  test("a full city_interest leak is still caught, in any case", () => {
+    const good = sent(processInput(welcomeDay0));
+    const bad = { ...good, body: good.body.replace("Tours are", "RICHARDSON, TX tours are") };
+    assert.ok(runChecks(bad, welcomeDay0).includes("no_pii_leak"));
+  });
+
+  test("a word that only contains the city isn't flagged (whole-word match)", () => {
+    const tc = variant(welcomeDay0, { input: { profile: { city_interest: "Plano, TX" } } });
+    const good = sent(processInput(tc));
+    const msg = { ...good, body: good.body.replace("Tours are", "Our pianoplanos are tuned. Tours are") };
+    assert.deepEqual(runChecks(msg, tc), []);
+  });
+
+  test("a property in the same city as city_interest can still be named", () => {
+    const tc = variant(welcomeDay0, { input: { property_name: "Richardson Apartments" } });
+    assert.ok(processInput(tc).next_message, JSON.stringify(processInput(tc).next_action));
+  });
+
+  test("Friday send offers next week's days and says 'next week'", () => {
+    const tc = variant(welcomeDay0, { input: { last_interaction: "2025-12-11T15:00:00Z" } });
+    assert.match(sent(processInput(tc)).body, /available next week/);
+  });
+
+  test("Wednesday send offers Fri + Mon and doesn't claim a single week", () => {
+    const tc = variant(welcomeDay0, { input: { last_interaction: "2025-12-09T15:00:00Z" } });
+    const msg = sent(processInput(tc));
+    assert.deepEqual(msg.cta.options, ["Fri", "Mon"]);
+    assert.ok(!/this week|next week/.test(msg.body), msg.body);
+  });
+
+  test("'Oak Ridge Apartments' still shortens to 'Oak Ridge' (spec example)", () => {
+    assert.ok(sent(processInput(longHorizonDay3)).subject?.startsWith("Tour Oak Ridge—"));
+  });
+
+  test("voice-only preference with voice consent sends nothing and doesn't throw", () => {
+    const tc = variant(welcomeDay0, { consent: { voice_opt_in: true }, channel_preferences: ["voice"] });
+    assert.equal(processInput(tc).next_message, null);
   });
 });
 

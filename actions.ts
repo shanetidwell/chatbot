@@ -5,11 +5,18 @@ import { addDays, dayOffset } from "./dates.ts";
 import type { Channel, Cta, NextAction, TestCase } from "./types.ts";
 
 // ---------------------------------------------------------------------------
-// 1. Channel: the first preferred channel the user has opted in to.
+// 1. Channel: the first preferred channel the user has opted in to that we can send on.
+//    Voice isn't supported yet, so it's skipped and the next consented channel is used.
 // ---------------------------------------------------------------------------
 
-export function pickChannel(testCase: TestCase): Channel | null {
-  return testCase.channel_preferences.find((c) => hasConsent(testCase, c)) ?? null;
+export type SupportedChannel = Exclude<Channel, "voice">;
+
+function isSupported(channel: Channel): channel is SupportedChannel {
+  return channel === "sms" || channel === "email";
+}
+
+export function pickChannel(testCase: TestCase): SupportedChannel | null {
+  return testCase.channel_preferences.filter(isSupported).find((c) => hasConsent(testCase, c)) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -18,9 +25,12 @@ export function pickChannel(testCase: TestCase): Channel | null {
 
 const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// "Oak Ridge Apartments" -> "Oak Ridge"
+// "Oak Ridge Apartments" -> "Oak Ridge". Only a trailing "Apartments" is dropped, so
+// "The Apartments at Legacy" stays as is, and a name that is just "Apartments" is kept whole.
 export function shortPropertyName(propertyName: string): string {
-  return propertyName.replace(/\s*\bApartments\b\s*/gi, " ").trim();
+  const name = propertyName.trim();
+  const short = name.replace(/\s+Apartments$/i, "").trim();
+  return short.length > 0 ? short : name;
 }
 
 // "Oak Ridge Apartments" -> "https://oakridge.example/tour"

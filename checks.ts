@@ -1,5 +1,6 @@
 // Checks that gate sending: required_states (consent, Fair Housing, brand style) and no-PII.
 
+import { shortPropertyName } from "./actions.ts";
 import { OPT_OUT_TEXT } from "./message.ts";
 import type { BlockedAction, Channel, CheckName, NextMessage, ProcessResult, TestCase } from "./types.ts";
 
@@ -20,14 +21,34 @@ const FAIR_HOUSING_PATTERNS: RegExp[] = [
   /\bmature (person|persons|individuals|adults)\b/i,
   /\b(christian|jewish|muslim|catholic|hindu|buddhist)\b/i,
   /\b(white|black|hispanic|latino|latina|asian)\b/i,
-  /\b(able[- ]bodied|handicapped|disabled|wheelchair)\b/i,
+  // Describing accessibility features ("wheelchair-accessible") is allowed; excluding people is not.
+  /\bable[- ]bodied\b/i,
+  /\bno wheelchairs?\b/i,
+  /\b(not suitable|unsuitable) for (the )?(disabled|handicapped)\b/i,
   /\b(english[- ]speaking|native[- ]born|immigrants?|citizens? only)\b/i,
   /\b(no section 8|no vouchers|section 8)\b/i,
   /\b(bachelor|man cave|his and hers)\b/i,
 ];
 
-function passesFairHousing(texts: string[]): boolean {
-  return texts.every((t) => FAIR_HOUSING_PATTERNS.every((p) => !p.test(t)));
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Blank out values that come from the input record itself (the user's first name, the property
+// name, amenity names), so e.g. "Hi Christian" or "White Oak" isn't read as a protected-class
+// phrase written by us. Longest first, so "White Oak Apartments" goes before "White Oak".
+function maskInputValues(text: string, testCase: TestCase): string {
+  const { property_name, profile } = testCase.input;
+  const values = [profile.first_name, property_name, shortPropertyName(property_name), ...(profile.amenity_interest ?? [])]
+    .filter((v) => v.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  return values.reduce((t, v) => t.replace(new RegExp(escapeRegExp(v), "gi"), " "), text);
+}
+
+function passesFairHousing(texts: string[], testCase: TestCase): boolean {
+  return texts
+    .map((t) => maskInputValues(t, testCase))
+    .every((t) => FAIR_HOUSING_PATTERNS.every((p) => !p.test(t)));
 }
 
 function passesBrandStyle(message: NextMessage, testCase: TestCase): boolean {
@@ -50,16 +71,25 @@ const PHONE_PATTERN = /\+?\d[\d\s().-]{8,}\d/;
 
 // First name and amenity interests are allowed (the spec uses both). Every other profile value,
 // the exact move date, the last-interaction timestamp, and any email/phone must stay out.
+// Profile values are also checked piece by piece ("Richardson, TX" -> "Richardson"), as whole
+// words, so a partial leak is caught. Pieces under 3 characters ("TX") are too short to check
+// on their own. The property name and first name are public, so they're masked out first.
 function passesNoPii(texts: string[], testCase: TestCase): boolean {
   const { profile, move_date_target, last_interaction } = testCase.input;
-  const forbidden = Object.entries(profile)
+  const profileValues = Object.entries(profile)
     .filter(([key, value]) => key !== "first_name" && key !== "amenity_interest" && typeof value === "string")
-    .map(([, value]) => (value as string).toLowerCase());
-  forbidden.push(move_date_target, last_interaction);
-  return texts.every((t) => {
-    const lower = t.toLowerCase();
+    .map(([, value]) => (value as string).trim())
+    .filter((value) => value.length > 0);
+  const words = profileValues.flatMap((value) => [value, ...value.split(",").map((part) => part.trim())]);
+  const forbiddenWords = [...new Set(words)]
+    .filter((w) => w.length >= 3)
+    .map((w) => new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(w)}($|[^\\p{L}\\p{N}])`, "iu"));
+  const forbiddenStrings = [move_date_target, last_interaction].filter((v) => v.trim().length > 0);
+  return texts.every((raw) => {
+    const t = maskInputValues(raw, testCase);
     return (
-      forbidden.every((f) => !lower.includes(f.toLowerCase())) &&
+      forbiddenWords.every((re) => !re.test(t)) &&
+      forbiddenStrings.every((f) => !t.includes(f)) &&
       !EMAIL_PATTERN.test(t) &&
       !PHONE_PATTERN.test(t)
     );
@@ -71,7 +101,7 @@ export function runChecks(message: NextMessage, testCase: TestCase): CheckName[]
   const texts = [message.subject ?? "", message.body];
   const results: Record<CheckName, () => boolean> = {
     consent_verified: () => hasConsent(testCase, message.channel),
-    fair_housing_check_passed: () => passesFairHousing(texts),
+    fair_housing_check_passed: () => passesFairHousing(texts, testCase),
     brand_style_applied: () => passesBrandStyle(message, testCase),
     no_pii_leak: () => passesNoPii(texts, testCase),
   };
