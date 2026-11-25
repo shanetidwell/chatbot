@@ -6,8 +6,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { runChecks } from "../src/checks.ts";
-import { promptInput } from "../src/llm.ts";
+import { FAIR_HOUSING_PHRASES, runChecks } from "../src/checks.ts";
+import { openAIContent, promptInput, RESPONSE_SCHEMA, SYSTEM_PROMPT } from "../src/llm.ts";
 import { processInput as processWith } from "../src/processInput.ts";
 import { templateContent } from "../src/templates.ts";
 import { readTestCases } from "../src/testCases.ts";
@@ -688,5 +688,130 @@ describe("language", async () => {
     assert.ok(!sent.includes("San Antonio"), "no city_interest");
     assert.ok(!sent.includes("2026-03-05"), "no exact move date");
     assert.ok(!/Reply|opt out|Thursday|this week/.test(sent), `no English wording: ${sent}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fair Housing phrase list: one list for the check and the prompt.
+// ---------------------------------------------------------------------------
+
+describe("Fair Housing phrase list", async () => {
+  test("every example shown to the model is caught by its own pattern (the two stay in step)", () => {
+    for (const { pattern, examples } of FAIR_HOUSING_PHRASES) {
+      for (const example of examples) assert.match(example, pattern, `"${example}" not matched by ${pattern}`);
+    }
+  });
+
+  test("the prompt lists every example and says they are English", () => {
+    for (const { examples } of FAIR_HOUSING_PHRASES) {
+      for (const example of examples) assert.ok(SYSTEM_PROMPT.includes(`"${example}"`), example);
+    }
+    assert.match(SYSTEM_PROMPT, /These are in English/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Untranslated amenities: detected from a (stubbed) model response.
+// ---------------------------------------------------------------------------
+
+describe("untranslated amenity detection", async () => {
+  // Calls openAIContent with fetch stubbed to return `reply`, and returns the logged event names.
+  async function eventsFor(testCase: TestCase, reply: object): Promise<string> {
+    const saved = { fetch: globalThis.fetch, error: console.error, key: process.env.OPENAI_API_KEY };
+    const logged: string[] = [];
+    process.env.OPENAI_API_KEY = "test";
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({
+        id: "x", model: "stub", usage: {},
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(reply) } }],
+      }))) as typeof fetch;
+    console.error = (line: string) => logged.push(line);
+    try {
+      await openAIContent(testCase, { channel: "email", send_at: "2025-12-15T10:00:00-06:00", cta: { type: "schedule_tour", link: "https://lomasdelrio.example/tour" } });
+    } finally {
+      globalThis.fetch = saved.fetch;
+      console.error = saved.error;
+      if (saved.key === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved.key;
+    }
+    return logged.join("\n");
+  }
+
+  const french = variant(longHorizonDay3Es, {
+    input: { language: "fr", profile: { amenity_interest: ["playground", "kids club", "senior lounge"] } },
+  });
+
+  test("a multi-word English label left in a French message is logged", async () => {
+    // The kind of output seen before the amenity_terms step.
+    const log = await eventsFor(french, {
+      language: "fr",
+      amenity_terms: ["playground", "kids club", "senior lounge"],
+      subject: "Visite Lomas del Río — Voir les espaces playground, kids club & senior lounge",
+      body: "Bonjour Mateo,\nDécouvrez nos espaces playground, kids club et senior lounge.",
+    });
+    assert.match(log, /untranslated_amenities \{"language":"fr","count":2\}/);
+  });
+
+  test("a Spanish subject starting with the English 'Tour' is logged", async () => {
+    const log = await eventsFor(longHorizonDay3Es, {
+      language: "es",
+      amenity_terms: ["piscina", "gimnasio", "spa"],
+      tour_verb: "Tour",
+      subject: "Tour Lomas del Río — Ver la piscina, el gimnasio y el spa que consultaste",
+      body: "Hola Mateo,\nVen a ver la piscina, el gimnasio y el spa.",
+    });
+    assert.match(log, /untranslated_tour_verb \{"language":"es"\}/);
+  });
+
+  test("logs carry no message text, first name or amenity values", async () => {
+    const log = await eventsFor(french, {
+      language: "fr",
+      amenity_terms: ["playground", "kids club", "senior lounge"],
+      tour_verb: "Visite",
+      subject: "Visite Lomas del Río — Voir les espaces playground, kids club & senior lounge",
+      body: "Bonjour Mateo,\nDécouvrez nos espaces playground, kids club et senior lounge.",
+    });
+    assert.match(log, /llm_generated/);
+    for (const value of ["Mateo", "Bonjour", "playground", "kids club", "senior lounge", "Découvrez"]) {
+      assert.ok(!log.includes(value), `log contains "${value}":\n${log}`);
+    }
+  });
+
+  test("a model reply that isn't JSON doesn't put the reply text in the log", async () => {
+    const saved = { fetch: globalThis.fetch, error: console.error, key: process.env.OPENAI_API_KEY };
+    const logged: string[] = [];
+    process.env.OPENAI_API_KEY = "test";
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: "x", model: "stub", choices: [{ message: { content: "Hola Sofía, te damos la bienvenida" } }] }))) as typeof fetch;
+    console.error = (line: string) => logged.push(line);
+    try {
+      await openAIContent(welcomeDay0Es, { channel: "sms", send_at: "2025-12-16T09:00:00-06:00", cta: { type: "schedule_tour", options: ["Thu", "Fri"] } });
+    } finally {
+      globalThis.fetch = saved.fetch;
+      console.error = saved.error;
+      if (saved.key === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved.key;
+    }
+    const log = logged.join("\n");
+    assert.match(log, /OpenAI returned invalid JSON/);
+    assert.ok(!log.includes("Sofía"), log);
+  });
+
+  test("translated labels are not logged", async () => {
+    const log = await eventsFor(french, {
+      language: "fr",
+      amenity_terms: ["aire de jeux", "club pour enfants", "salon pour seniors"],
+      tour_verb: "Visite",
+      subject: "Visite Lomas del Río — Voir l'aire de jeux, le club pour enfants & le salon pour seniors",
+      body: "Bonjour Mateo,\nDécouvrez notre aire de jeux, le club pour enfants et le salon pour seniors.",
+    });
+    assert.ok(!log.includes("untranslated_"), log);
+  });
+});
+
+describe("response schema", () => {
+  // OpenAI strict structured output rejects the whole request (HTTP 400) otherwise.
+  test("every property is required (OpenAI strict mode)", () => {
+    assert.deepEqual([...RESPONSE_SCHEMA.required].sort(), Object.keys(RESPONSE_SCHEMA.properties).sort());
   });
 });

@@ -4,8 +4,9 @@
 //
 // Messages can be in any language, so brand style and no-PII check things that don't depend on
 // it (first name, the STOP keyword, reply numbers, links, length, profile values). Fair Housing
-// is the exception: its phrase list is English, so for other languages it relies on the
-// prompt's Fair Housing rules.
+// is the exception: its phrase list is English. The same list is sent to the language model
+// (llm.ts), which is told to avoid these phrases and their equivalents in the message language;
+// for other languages that prompt is the guard, and the regexes here catch English slips.
 
 import { hasConsent } from "./channel.ts";
 import { logForObservability } from "./observability.ts";
@@ -43,28 +44,53 @@ export function runChecks(message: NextMessage, testCase: TestCase, writtenIn: s
 // Fair Housing
 // ---------------------------------------------------------------------------
 
-// Phrases that state or imply a preference about a protected class.
-const FAIR_HOUSING_PATTERNS: RegExp[] = [
-  /\b(no|without) (kids|children)\b/i,
-  /\badults? only\b/i,
-  /\b(perfect|ideal|great) for (singles|couples|families|young professionals|students|seniors|retirees)\b/i,
-  /\b(family|families)[- ]friendly\b/i,
-  /\bmature (person|persons|individuals|adults)\b/i,
-  /\b(christian|jewish|muslim|catholic|hindu|buddhist)\b/i,
-  /\b(white|black|hispanic|latino|latina|asian)\b/i,
+// Phrases that state or imply a preference about a protected class. One list for both sides:
+// `pattern` is what the check matches (English), `examples` is how the phrases are shown to the
+// language model so it can avoid them, and their equivalents, in any language. Keep the two in
+// step when editing an entry.
+export const FAIR_HOUSING_PHRASES: { protects: string; pattern: RegExp; examples: string[] }[] = [
+  { protects: "familial status", pattern: /\b(no|without) (kids|children)\b/i, examples: ["no kids", "without children"] },
+  { protects: "familial status / age", pattern: /\badults? only\b/i, examples: ["adults only"] },
+  {
+    protects: "familial status / age / sex",
+    pattern: /\b(perfect|ideal|great) for (singles|couples|families|young professionals|students|seniors|retirees)\b/i,
+    examples: ["perfect for singles", "ideal for couples", "great for families", "ideal for young professionals", "great for students", "perfect for seniors", "ideal for retirees"],
+  },
+  { protects: "familial status", pattern: /\b(family|families)[- ]friendly\b/i, examples: ["family-friendly"] },
+  { protects: "age", pattern: /\bmature (person|persons|individuals|adults)\b/i, examples: ["mature adults", "mature person"] },
+  {
+    protects: "religion",
+    pattern: /\b(christian|jewish|muslim|catholic|hindu|buddhist)\b/i,
+    examples: ["Christian", "Jewish", "Muslim", "Catholic", "Hindu", "Buddhist"],
+  },
+  {
+    protects: "race / national origin",
+    pattern: /\b(white|black|hispanic|latino|latina|asian)\b/i,
+    examples: ["white", "black", "Hispanic", "Latino", "Latina", "Asian"],
+  },
   // Describing accessibility features ("wheelchair-accessible") is allowed; excluding people is not.
-  /\bable[- ]bodied\b/i,
-  /\bno wheelchairs?\b/i,
-  /\b(not suitable|unsuitable) for (the )?(disabled|handicapped)\b/i,
-  /\b(english[- ]speaking|native[- ]born|immigrants?|citizens? only)\b/i,
-  /\b(no section 8|no vouchers|section 8)\b/i,
-  /\b(bachelor|man cave|his and hers)\b/i,
+  { protects: "disability", pattern: /\bable[- ]bodied\b/i, examples: ["able-bodied"] },
+  { protects: "disability", pattern: /\bno wheelchairs?\b/i, examples: ["no wheelchairs"] },
+  {
+    protects: "disability",
+    pattern: /\b(not suitable|unsuitable) for (the )?(disabled|handicapped)\b/i,
+    examples: ["not suitable for the disabled", "unsuitable for handicapped"],
+  },
+  {
+    protects: "national origin",
+    pattern: /\b(english[- ]speaking|native[- ]born|immigrants?|citizens? only)\b/i,
+    examples: ["English-speaking", "native-born", "immigrants", "citizens only"],
+  },
+  { protects: "source of income", pattern: /\b(no section 8|no vouchers|section 8)\b/i, examples: ["no Section 8", "no vouchers"] },
+  { protects: "sex", pattern: /\b(bachelor|man cave|his and hers)\b/i, examples: ["bachelor pad", "man cave", "his and hers"] },
 ];
 
 function passesFairHousing(texts: string[], testCase: TestCase): boolean {
   const masked = texts.map((t) => maskInputValues(t, testCase));
   logMaskingApplied(texts, masked, testCase);
-  const matched = FAIR_HOUSING_PATTERNS.filter((p) => masked.some((t) => p.test(t))).map((p) => p.source);
+  const matched = FAIR_HOUSING_PHRASES.filter(({ pattern }) => masked.some((t) => pattern.test(t))).map(
+    ({ pattern }) => pattern.source,
+  );
   if (matched.length > 0) logForObservability(testCase.task_id, "fair_housing_violation", { patterns: matched });
   return matched.length === 0;
 }

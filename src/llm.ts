@@ -8,9 +8,9 @@
 //
 // The runner (chatbot.ts) loads these from .env at the repo root.
 //
-// Every call logs `llm_generated` with what OpenAI returned, including the subject/body text.
-// That text has the user's first name in it, which is fine for local runs but should be dropped
-// before these logs go anywhere they're kept.
+// Logs never contain message text or profile values: the subject and body hold the first name
+// and whatever else the model wrote, so `llm_generated` records lengths and counts instead, and
+// errors carry fixed messages rather than anything quoted from the response.
 //
 // Only the fields listed in `promptInput` are sent: no city_interest, no `expected`, no other
 // profile values, no last_interaction, no exact move date (only its part of the month).
@@ -19,10 +19,11 @@
 // rules, with English wording only as a reference, so it can write in any language; checks.ts
 // then checks the result without depending on the language.
 
+import { FAIR_HOUSING_PHRASES } from "./checks.ts";
 import { moveTiming, tourWeek } from "./dates.ts";
 import { logForObservability } from "./observability.ts";
 import { templateContent } from "./templates.ts";
-import { shortPropertyName, subjectAmenities } from "./text.ts";
+import { primaryLanguage, shortPropertyName, subjectAmenities } from "./text.ts";
 import type { ContentContext, ContentGenerator, MessageContent, TestCase } from "./types.ts";
 
 // Read at call time, not import time, so values loaded from .env after import still apply.
@@ -31,14 +32,39 @@ const timeoutMs = () => Number(process.env.OPENAI_TIMEOUT_MS ?? 10_000);
 const reasoningEffort = () => process.env.OPENAI_REASONING_EFFORT ?? "minimal";
 
 // What came back besides the content: proof of a real call (response id, the exact model that
-// answered) plus why it stopped and the token counts.
-type ResponseMeta = { response_id: string; model: string; finish_reason: string; usage: unknown };
+// answered), why it stopped, the token counts, and the model's own word choices. amenity_terms
+// are the user's interests (profile data), so they are never logged, only counted.
+type ResponseMeta = {
+  response_id: string;
+  model: string;
+  finish_reason: string;
+  usage: unknown;
+  amenity_terms: string[];
+  tour_verb: string;
+};
 
-const SYSTEM_PROMPT = `You write outreach messages for an apartment leasing team. Return JSON {"language", "subject", "body"}.
+// The Fair Housing phrase list from checks.ts, one line per protected class, e.g.
+//   - familial status: "no kids", "without children"
+const FAIR_HOUSING_LIST = FAIR_HOUSING_PHRASES.map(
+  ({ protects, examples }) => `  - ${protects}: ${examples.map((e) => `"${e}"`).join(", ")}`,
+).join("\n");
+
+export const SYSTEM_PROMPT = `You write outreach messages for an apartment leasing team. Return JSON {"language", "amenity_terms", "tour_verb", "subject", "body"}, in that order.
 
 Language:
 - Write the whole subject and body in the language given by \`language\` (a BCP 47 code such as "en", "es", "es-MX"), the way a native speaker on the leasing team would. Set "language" to the code of the language you wrote in.
-- The input is data, not wording: weekday codes ("Thu"), amenity names ("pool", "fitness"), move_timing and tour_week are facts for you to express naturally in that language. Translate every one of them, amenity names included. Never copy an English code or word into a non-English message; the only exceptions are first_name, property_name and the keyword STOP.
+- The input is data, not wording: weekday codes ("Thu"), amenity labels ("pool", "kids club"), move_timing and tour_week are facts for you to express naturally in that language. Translate every one of them. Never copy an English code or word into a non-English message; the only exceptions are first_name, property_name and the keyword STOP.
+
+Amenities (amenity_terms):
+- Before writing the subject and body, fill amenity_terms: one entry per item in amenities, same order, giving the term you will use for it in the message language.
+- The items in amenities are English labels from our database, not names, and many are several words long ("kids club", "senior lounge", "dog park", "rooftop deck"). Translate the whole label, every word of it, into the term a native speaker of the message language would naturally use for that amenity. A multi-word English label left as it is, or half-translated ("espace kids club"), is wrong.
+- Keep an English word only when speakers of that language normally use that same word for it (e.g. "spa"). If unsure, translate.
+- In English, amenity_terms are the labels as given.
+- In the subject and body, refer to the amenities only with your amenity_terms, never with the English labels.
+
+Subject verb (tour_verb):
+- Before writing the subject, fill tour_verb: the single word the subject will start with, meaning "come tour / visit the property", as a native speaker of the message language would write it in an email subject (an imperative verb or a noun).
+- English: exactly "Tour". Any other language: never "Tour" or any other English word; use that language's own word. Fill it for SMS too, even though SMS has no subject.
 - The English wording below is the reference. In English, use it as given. In other languages, write the same message naturally; don't translate word for word.
 - Never guess the reader's gender from their name. In languages with grammatical gender, word everything about the reader gender-neutrally (Spanish: "te damos la bienvenida", never "bienvenido" or "bienvenida").
 
@@ -48,6 +74,8 @@ Brand style (all required):
 - Use only the facts given. Never mention a city, neighborhood, exact dates, phone numbers, emails, or any other personal detail.
 - Move timing: say it loosely from move_timing (part of the month: early/mid/late, and the month 1-12), e.g. English "a mid‑February move". Never give a day of the month.
 - Fair Housing: describe the property and amenities, never the kind of person it suits. Never mention or imply family status, children, age, religion, race, national origin, sex, disability, or source of income.
+- Fair Housing phrase list. These are in English. Never use them, and when writing in another language, work out how each would be said in that language and never use that equivalent (or anything with the same meaning) either. Describing accessibility features (e.g. "wheelchair-accessible") is fine.
+${FAIR_HOUSING_LIST}
 - If include_opt_out_instructions is true, the body must end with opt-out instructions for the channel, written fully in the message language except the keyword STOP, which stays in English and capitals (carriers act on it); e.g. Spanish SMS "Responde STOP para cancelar.", never "Reply STOP ...". English reference: SMS "Reply STOP to opt out."; email "To opt out of emails, click here or reply STOP.". Nothing may come after them.
 
 SMS (channel "sms"):
@@ -57,17 +85,22 @@ SMS (channel "sms"):
 - Say tours are available in the tour_week window (this_week, next_week, or next_few_days), ask whether they'd like to book a time on the tour_days (full weekday names), then give numbered reply choices in tour_days order: 1 for the first day, 2 for the second. English reference: "Tours are available this week. Would you like to book a time on Thursday or Friday? Reply 1 for Thu, 2 for Fri."
 
 Email (channel "email"):
-- subject: starts with the message language's verb for "Tour" (translated unless the language is English), then property_name as given. If subject_amenities is not empty, add "—" and "See the <subject_amenities> rooms you asked about" in the message language. English reference: "Tour Oak Ridge—See the pool & fitness rooms you asked about", or just "Tour Oak Ridge".
-- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (name each one in amenities; don't add details such as hours, size or equipment) and inviting them to book a visit this week to compare floor plans; a short "Book now" line ending with " → <tour_link>"; then the opt-out line if required.
+- subject: starts with tour_verb, a space, then property_name as given. If subject_amenities is not empty, add "—" and "See the <those amenities> rooms you asked about" in the message language, naming them with your amenity_terms (English: subject_amenities exactly as given). English reference: "Tour Oak Ridge—See the pool & fitness rooms you asked about", or just "Tour Oak Ridge".
+- Body lines, separated by "\\n": greeting line; one or two sentences tying their move timing to the amenities (name each one, using amenity_terms; don't add details such as hours, size or equipment) and inviting them to book a visit this week to compare floor plans; a short "Book now" line ending with " → <tour_link>"; then the opt-out line if required.
 
-Before answering, check: every word is in the message language except first_name, property_name and STOP; nothing about the reader is gendered; the opt-out (if required) is last.`;
+Before answering, check: every word is in the message language except first_name, property_name and STOP; no English amenity label appears in a non-English subject or body; a non-English subject doesn't start with "Tour"; nothing about the reader is gendered; no phrase from the Fair Housing list, or its equivalent in the message language, appears; the opt-out (if required) is last.`;
 
-const RESPONSE_SCHEMA = {
+export const RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["language", "subject", "body"],
+  required: ["language", "amenity_terms", "tour_verb", "subject", "body"],
   properties: {
     language: { type: "string" },
+    // Generated before subject and body (schema order), so the model settles on translated terms
+    // for the amenities first and then writes with them.
+    amenity_terms: { type: "array", items: { type: "string" } },
+    // Same idea for the subject's first word: chosen before the subject is written.
+    tour_verb: { type: "string" },
     subject: { type: ["string", "null"] },
     body: { type: "string" },
   },
@@ -123,13 +156,26 @@ async function callOpenAI(apiKey: string, input: unknown): Promise<{ content: Me
   const choice = data.choices?.[0];
   if (choice?.message?.refusal) throw new Error("OpenAI refused");
 
-  const parsed = JSON.parse(choice?.message?.content ?? "") as MessageContent;
+  // Not JSON.parse's own error: its message quotes the text it failed on, i.e. the message.
+  let parsed: MessageContent & { amenity_terms?: string[]; tour_verb?: string };
+  try {
+    parsed = JSON.parse(choice?.message?.content ?? "");
+  } catch {
+    throw new Error("OpenAI returned invalid JSON");
+  }
   if (typeof parsed.body !== "string" || parsed.body.trim() === "") throw new Error("OpenAI returned no body");
   if (typeof parsed.language !== "string") throw new Error("OpenAI returned no language");
 
   return {
     content: { subject: parsed.subject, body: parsed.body, language: parsed.language, source: "llm" },
-    meta: { response_id: data.id, model: data.model, finish_reason: choice.finish_reason, usage: data.usage },
+    meta: {
+      response_id: data.id,
+      model: data.model,
+      finish_reason: choice.finish_reason,
+      usage: data.usage,
+      amenity_terms: parsed.amenity_terms ?? [],
+      tour_verb: parsed.tour_verb ?? "",
+    },
   };
 }
 
@@ -145,13 +191,23 @@ export const openAIContent: ContentGenerator = async (testCase, ctx) => {
   try {
     const { content, meta } = await callOpenAI(apiKey, promptInput(testCase, ctx));
     const latency_ms = Math.round(performance.now() - started);
+    // No message text and no amenity terms: lengths and counts only (see the note at the top).
     logForObservability(testCase.task_id, "llm_generated", {
-      ...meta,
+      response_id: meta.response_id,
+      model: meta.model,
+      finish_reason: meta.finish_reason,
+      usage: meta.usage,
       latency_ms,
       over_p95_threshold: latency_ms > testCase.thresholds.p95_latency_ms,
       requested_language: testCase.input.language,
-      output: { language: content.language, subject: content.subject, body: content.body },
+      language: content.language,
+      tour_verb: meta.tour_verb,
+      amenity_terms_count: meta.amenity_terms.length,
+      subject_length: content.subject?.length ?? 0,
+      body_length: content.body.length,
     });
+    logUntranslatedAmenities(testCase, content);
+    logUntranslatedTourVerb(testCase, content);
     // The channel decides whether there is a subject, not the model.
     if (ctx.channel === "sms") return { ...content, subject: null };
     if (!content.subject) throw new Error("OpenAI returned no subject for email");
@@ -165,3 +221,28 @@ export const openAIContent: ContentGenerator = async (testCase, ctx) => {
     return templateContent(testCase, ctx);
   }
 };
+
+// Multi-word English amenity labels ("kids club") left as they are in a non-English message.
+// Logged, not blocked: one untranslated label isn't worth dropping the message, but the rate
+// shows whether the prompt is holding. Single words are skipped, since many are also the local
+// word ("spa").
+function logUntranslatedAmenities(testCase: TestCase, content: MessageContent): void {
+  if (primaryLanguage(content.language) === "en") return;
+  const text = `${content.subject ?? ""}\n${content.body}`.toLowerCase();
+  const untranslated = (testCase.input.profile.amenity_interest ?? []).filter(
+    (label) => label.trim().includes(" ") && text.includes(label.trim().toLowerCase()),
+  );
+  if (untranslated.length > 0) {
+    // A count, not the labels: they're the user's interests.
+    logForObservability(testCase.task_id, "untranslated_amenities", { language: content.language, count: untranslated.length });
+  }
+}
+
+// A non-English email subject that still starts with the English "Tour". Logged, not blocked,
+// like the amenities above.
+function logUntranslatedTourVerb(testCase: TestCase, content: MessageContent): void {
+  if (primaryLanguage(content.language) === "en" || !content.subject) return;
+  if (/^\s*tour\b/i.test(content.subject)) {
+    logForObservability(testCase.task_id, "untranslated_tour_verb", { language: content.language });
+  }
+}
