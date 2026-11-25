@@ -12,6 +12,7 @@ import { hasConsent } from "./channel.ts";
 import { logForObservability } from "./observability.ts";
 import { OPT_OUT_KEYWORD, primaryLanguage, shortPropertyName, SMS_MAX_LENGTH } from "./text.ts";
 import type { CheckName, NextMessage, TestCase } from "./types.ts";
+import { VOICE_MAX_LENGTH } from "./voice.ts";
 
 // `writtenIn` is the language the content was written in (MessageContent.language).
 export function runChecks(message: NextMessage, testCase: TestCase, writtenIn: string): CheckName[] {
@@ -107,7 +108,8 @@ function logMaskingApplied(texts: string[], masked: string[], testCase: TestCase
 // ---------------------------------------------------------------------------
 
 // Greets by first name, ends with the opt-out instructions when required, and fits the channel's
-// format: SMS is short, has no subject or links, and numbers the reply options; email has a
+// format: SMS is short, has no subject or links, and numbers the reply options; voice (the call
+// script) is the same, with its own length cap and no symbols that read badly aloud; email has a
 // subject naming the property and the tour link in the body. None of this depends on the
 // message language.
 function passesBrandStyle(message: NextMessage, testCase: TestCase): boolean {
@@ -123,11 +125,14 @@ function brandStyleFailures(message: NextMessage, testCase: TestCase): string[] 
   if (testCase.assertions.constraints.include_opt_out_instructions && !endsWithOptOut(body, message.channel)) {
     failed.push("opt_out_last");
   }
-  if (message.channel === "sms") {
-    if (message.subject !== null) failed.push("sms_subject");
-    if (body.length > SMS_MAX_LENGTH) failed.push("sms_length");
-    if (/https?:\/\//.test(body)) failed.push("sms_link");
-    if (!(cta.options ?? []).every((_, i) => new RegExp(`(?<!\\d)${i + 1}(?!\\d)`).test(body))) failed.push("sms_reply_numbers");
+  if (message.channel === "sms" || message.channel === "voice") {
+    const ch = message.channel;
+    if (message.subject !== null) failed.push(`${ch}_subject`);
+    if (body.length > (ch === "sms" ? SMS_MAX_LENGTH : VOICE_MAX_LENGTH)) failed.push(`${ch}_length`);
+    if (/https?:\/\//.test(body)) failed.push(`${ch}_link`);
+    if (!(cta.options ?? []).every((_, i) => new RegExp(`(?<!\\d)${i + 1}(?!\\d)`).test(body))) failed.push(`${ch}_reply_numbers`);
+    // Read aloud: symbols text-to-speech reads out literally or skips.
+    if (ch === "voice" && /[—→&/#@]|\p{Extended_Pictographic}/u.test(body)) failed.push("voice_unspeakable");
   } else {
     if (!message.subject.includes(shortPropertyName(testCase.input.property_name))) failed.push("subject_property");
     if (!cta.link || !body.includes(cta.link)) failed.push("email_link");

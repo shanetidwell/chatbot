@@ -4,7 +4,8 @@
 // language model is shown. The model writes in the user's own language, so the checks don't
 // compare against these strings; they check language-neutral things instead (see checks.ts).
 
-import type { SupportedChannel } from "./types.ts";
+import type { Channel } from "./types.ts";
+import { ENGLISH_VOICE_OPT_OUT } from "./voice.ts";
 
 // "Oak Ridge Apartments" -> "Oak Ridge". Only a trailing "Apartments" is dropped, so
 // "The Apartments at Legacy" stays as is, and a name that is just "Apartments" is kept whole.
@@ -56,7 +57,8 @@ export function englishReplyLine(options: string[]): string {
 // The carrier-standard opt-out keyword. It stays "STOP" in every language.
 export const OPT_OUT_KEYWORD = "STOP";
 
-export const ENGLISH_OPT_OUT: Record<SupportedChannel, string> = {
+export const ENGLISH_OPT_OUT: Record<Channel, string> = {
   sms: "Reply STOP to opt out.",
   email: "To opt out of emails, click here or reply STOP.",
+  voice: ENGLISH_VOICE_OPT_OUT,
 };

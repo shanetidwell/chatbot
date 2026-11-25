@@ -15,7 +15,12 @@ npm run typecheck
 
 Message text comes from OpenAI when `OPENAI_API_KEY` is set, in the shell or in `.env` at the
 repo root. Without it, the deterministic templates are used. Messages are written in each record's
-`input.language`; the templates are English only, so a non-English record with no model is not sent. Structured logs go to stderr.
+`input.language`; the templates are English only, so a non-English record with no model is not sent.
+
+Voice: we don't place calls. For a user who prefers and has consented to voice, `next_message.body`
+is the script the call would say (`subject: null`, spoken reply choices in `cta.options`). That
+format is a guess; everything about it lives in `src/voice.ts` so it can be adjusted once real
+voice samples arrive. Structured logs go to stderr.
 
 ## Layout
 
@@ -31,6 +36,7 @@ src/
   templates.ts           5. deterministic subject and body
   text.ts                wording rules shared by templates, the LLM prompt and the checks
   checks.ts              6. consent, Fair Housing, brand style and no-PII checks
+  voice.ts               voice channel: the call script format (a guess until real voice samples arrive)
   types.ts               input and output types
   testCases.ts           JSONL loader
   observability.ts       structured logging

@@ -9,10 +9,11 @@
 
 import { monthName, moveTiming, tourWeek, weekdayName, type TourWeek } from "./dates.ts";
 import { ENGLISH_OPT_OUT, englishReplyLine, englishSubject, joinList, shortPropertyName, subjectAmenities } from "./text.ts";
-import type { ContentGenerator, Cta, LifecycleStage, SupportedChannel } from "./types.ts";
+import { englishVoiceScript } from "./voice.ts";
+import type { ContentGenerator, Cta, LifecycleStage, Channel } from "./types.ts";
 
 type BodyInput = {
-  channel: SupportedChannel;
+  channel: Channel;
   lifecycle_stage: LifecycleStage;
   first_name: string;
   property_name: string;
@@ -42,13 +43,27 @@ export const templateContent: ContentGenerator = async (testCase, { channel, sen
       channel === "email"
         ? englishSubject(input.property_name, subjectAmenities(testCase.task_id, input.profile.amenity_interest))
         : null,
-    // Opt-out on its own line for email, same paragraph for SMS.
+    // Opt-out on its own line for email, same paragraph for SMS and voice.
     body: optOut ? `${body}${channel === "email" ? "\n" : " "}${optOut}` : body,
   };
 };
 
 function buildBody(input: BodyInput): string {
-  return input.channel === "sms" ? smsBody(input) : emailBody(input);
+  switch (input.channel) {
+    case "sms":
+      return smsBody(input);
+    case "email":
+      return emailBody(input);
+    case "voice":
+      // The call script; its wording lives in voice.ts with the other voice guesses.
+      return englishVoiceScript({
+        lifecycle_stage: input.lifecycle_stage,
+        first_name: input.first_name,
+        short_property_name: shortPropertyName(input.property_name),
+        when: WEEK_PHRASE[tourWeek(input.send_at, input.cta.options ?? [])],
+        options: input.cta.options ?? [],
+      });
+  }
 }
 
 const WEEK_PHRASE: Record<TourWeek, string> = {

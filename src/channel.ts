@@ -2,33 +2,25 @@
 // Consent overrides preference: we only ever send on a channel the user has opted in to.
 
 import { logForObservability } from "./observability.ts";
-import type { Channel, SupportedChannel, TestCase } from "./types.ts";
+import type { Channel, TestCase } from "./types.ts";
 
 export function hasConsent(testCase: TestCase, channel: Channel): boolean {
   return testCase.consent[`${channel}_opt_in`] === true;
 }
 
-function isSupported(channel: Channel): channel is SupportedChannel {
-  return channel === "sms" || channel === "email";
-}
-
-// The first preferred channel the user has opted in to that we can send on, or null if none.
-// Voice isn't supported yet, so it's skipped and the next consented channel is used.
-export function pickChannel(testCase: TestCase): SupportedChannel | null {
+// The first preferred channel the user has opted in to, or null if none. For voice we don't
+// place the call; the message is the call script (see voice.ts).
+export function pickChannel(testCase: TestCase): Channel | null {
   const preferences = testCase.channel_preferences;
-  const picked = preferences.filter(isSupported).find((c) => hasConsent(testCase, c)) ?? null;
+  const picked = preferences.find((c) => hasConsent(testCase, c)) ?? null;
 
-  // Every preference ahead of the one we picked was skipped; record why.
+  // Every preference ahead of the one we picked was skipped for lack of consent.
   const considered = picked ? preferences.slice(0, preferences.indexOf(picked)) : preferences;
-  const skipped = considered.map((channel) => ({
-    channel,
-    reason: isSupported(channel) ? "no_consent" : "unsupported",
-  }));
   logForObservability(testCase.task_id, "channel_selected", {
     picked,
     preferred: preferences[0] ?? null,
     fell_back: picked !== null && picked !== preferences[0],
-    skipped,
+    skipped: considered.map((channel) => ({ channel, reason: "no_consent" })),
   });
 
   return picked;

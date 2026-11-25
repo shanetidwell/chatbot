@@ -168,3 +168,24 @@ export const longHorizonDay3Es: TestCase = {
     next_action: { type: "follow_up_in_days", value: 3 },
   },
 };
+
+// 5) GUESS, not from sample data: day-0 welcome where the user prefers and consented to voice.
+// We don't place calls; the message body is the script the call would say. Every voice
+// assumption (shape, CTA, wording, length, opt-out) is in src/voice.ts. When real voice records
+// arrive, put one in data/sample.jsonl, replace this with its typed copy, and adjust voice.ts
+// until `npm test` passes.
+export const voiceWelcomeDay0Guess: TestCase = {
+  ...welcomeDay0,
+  consent: { email_opt_in: true, sms_opt_in: true, voice_opt_in: true },
+  channel_preferences: ["voice", "sms", "email"],
+  expected: {
+    next_message: {
+      channel: "voice",
+      send_at: "2025-12-09T09:00:00-06:00",
+      subject: null,
+      body: "Hi Taylor, this is Oak Ridge calling to welcome you! Tours are available this week. Would you like to book a time on Thursday or Friday? Press or say 1 for Thursday, 2 for Friday. To stop these calls, say STOP.",
+      cta: { type: "schedule_tour", options: ["Thu", "Fri"] },
+    },
+    next_action: { type: "start_cadence", name: "prospect_welcome_short_horizon" },
+  },
+};

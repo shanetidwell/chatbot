@@ -12,7 +12,7 @@ import { processInput as processWith } from "../src/processInput.ts";
 import { templateContent } from "../src/templates.ts";
 import { readTestCases } from "../src/testCases.ts";
 import type { ContentGenerator, NextMessage, ProcessResult, TestCase } from "../src/types.ts";
-import { longHorizonDay3, longHorizonDay3Es, welcomeDay0, welcomeDay0Es } from "./fixtures.ts";
+import { longHorizonDay3, longHorizonDay3Es, voiceWelcomeDay0Guess, welcomeDay0, welcomeDay0Es } from "./fixtures.ts";
 
 // The tests use the template generator: deterministic, and no network calls.
 const processInput = (testCase: TestCase) => processWith(testCase, templateContent);
@@ -176,6 +176,67 @@ describe("channel and consent", async () => {
       channel_preferences: ["sms", "email"],
     });
     assert.equal((await processInput(tc)).next_message, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Voice. We don't place calls; the message body is the call script. The expected values are a
+// GUESS (voiceWelcomeDay0Guess, src/voice.ts) until real voice samples arrive.
+// ---------------------------------------------------------------------------
+
+describe("voice (guessed format)", async () => {
+  test("prefers and consented to voice -> matches the guessed voice record", async () => {
+    assert.deepEqual(await processInput(voiceWelcomeDay0Guess), voiceWelcomeDay0Guess.expected);
+  });
+
+  test("prefers voice but no voice consent -> next consented channel", async () => {
+    const tc = variant(voiceWelcomeDay0Guess, { consent: { voice_opt_in: false } });
+    assert.equal(sent(await processInput(tc)).channel, "sms");
+  });
+
+  test("the script is written to be read aloud: no subject, no link, full day names, numbered choices, opt-out last", async () => {
+    const tc = variant(voiceWelcomeDay0Guess, { lifecycle_stage: "open", task_id: "prospect_long_horizon_day3" });
+    const msg = sent(await processInput(tc));
+    assert.equal(msg.channel, "voice");
+    assert.equal(msg.subject, null);
+    assert.equal(msg.cta.link, undefined);
+    assert.ok(!/https?:\/\//.test(msg.body), msg.body);
+    assert.match(msg.body, /^Hi Taylor, this is Oak Ridge calling to check in\./);
+    assert.match(msg.body, /1 for \w+day, 2 for \w+day\./);
+    assert.ok(msg.body.endsWith("To stop these calls, say STOP."), msg.body);
+  });
+
+  test("symbols a voice would read badly fail brand style", async () => {
+    const good = sent(await processInput(voiceWelcomeDay0Guess));
+    for (const bad of ["Hi Taylor—welcome", "pool & spa", "Book now → oakridge"]) {
+      const msg = { ...good, body: good.body.replace("Tours are", `${bad}. Tours are`) };
+      assert.deepEqual(runChecks(msg, voiceWelcomeDay0Guess, "en"), ["brand_style_applied"], bad);
+    }
+  });
+
+  test("a script over the voice length cap fails brand style", async () => {
+    const good = sent(await processInput(voiceWelcomeDay0Guess));
+    const msg = { ...good, body: good.body.replace("Tours are", `${"Lots to see. ".repeat(40)}Tours are`) };
+    assert.deepEqual(runChecks(msg, voiceWelcomeDay0Guess, "en"), ["brand_style_applied"]);
+  });
+
+  test("the model gets tour days for voice, not a link", async () => {
+    const input = promptInput(voiceWelcomeDay0Guess, {
+      channel: "voice",
+      send_at: "2025-12-09T09:00:00-06:00",
+      cta: { type: "schedule_tour", options: ["Thu", "Fri"] },
+    });
+    assert.equal(input.channel, "voice");
+    assert.ok("tour_days" in input && !("tour_link" in input));
+    assert.match(SYSTEM_PROMPT, /Voice \(channel "voice"\)/);
+  });
+
+  test("Spanish voice script from the model is sent; a subject from the model is dropped", async () => {
+    const tc = variant(voiceWelcomeDay0Guess, { input: { language: "es", profile: { first_name: "Sofía" } } });
+    const body = "Hola Sofía, te llama Oak Ridge para darte la bienvenida. Hay visitas disponibles esta semana. ¿Te gustaría reservar una visita el jueves o el viernes? Marca o di 1 para jueves, 2 para viernes. Para dejar de recibir llamadas, di STOP.";
+    const msg = sent(await processWith(tc, fakeModel({ language: "es", subject: null, body })));
+    assert.equal(msg.channel, "voice");
+    assert.equal(msg.body, body);
   });
 });
 
@@ -398,14 +459,15 @@ describe("invariants", async () => {
   const amenitySets: string[][] = [[], ["pool"], ["pool", "fitness"], ["pool", "fitness", "spa"]];
 
   for (const timezone of timezones) {
-    for (const channel of ["sms", "email"] as const) {
+    for (const channel of ["sms", "email", "voice"] as const) {
       test(`${timezone} / ${channel}: every combination sends a well-formed message`, async () => {
         for (const n of days) {
           for (const last_interaction of lastInteractions) {
             for (const amenity_interest of amenitySets) {
               const tc = variant(longHorizonDay3, {
                 task_id: `prospect_long_horizon_day${n}`,
-                consent: { email_opt_in: channel === "email", sms_opt_in: channel === "sms" },
+                consent: { email_opt_in: channel === "email", sms_opt_in: channel === "sms", voice_opt_in: channel === "voice" },
+                channel_preferences: ["email", "sms", "voice"],
                 input: { timezone, last_interaction, profile: { amenity_interest } },
               });
               const where = `day${n} ${last_interaction} [${amenity_interest}]`;
@@ -425,7 +487,7 @@ describe("invariants", async () => {
               assert.equal(daysBetween(lastLocal, local.date), n === 0 ? 1 : n, `${where}: day offset`);
 
               // Channel format.
-              if (msg.channel === "sms") {
+              if (msg.channel !== "email") {
                 assert.equal(msg.subject, null, where);
                 assert.equal(msg.cta.link, undefined, where);
                 assert.equal(msg.cta.options?.length, 2, where);
@@ -507,11 +569,11 @@ describe("fixed bugs", async () => {
 
   // --- Unsupported channel. ---
 
-  test("voice preferred and consented doesn't crash; falls back to the next consented channel", async () => {
+  test("voice preferred and consented doesn't crash; sends the voice script", async () => {
     const tc = variant(welcomeDay0, { consent: { voice_opt_in: true }, channel_preferences: ["voice", "sms"] });
     let result: ProcessResult | undefined;
     await assert.doesNotReject(async () => { result = await processInput(tc); });
-    assert.equal(result!.next_message?.channel, "sms");
+    assert.equal(result!.next_message?.channel, "voice");
   });
 });
 
@@ -567,9 +629,9 @@ describe("fixes don't weaken the checks", async () => {
     assert.ok(sent(await processInput(longHorizonDay3)).subject?.startsWith("Tour Oak Ridge—"));
   });
 
-  test("voice-only preference with voice consent sends nothing and doesn't throw", async () => {
+  test("voice-only preference with voice consent sends the voice script", async () => {
     const tc = variant(welcomeDay0, { consent: { voice_opt_in: true }, channel_preferences: ["voice"] });
-    assert.equal((await processInput(tc)).next_message, null);
+    assert.equal(sent(await processInput(tc)).channel, "voice");
   });
 });
 
@@ -746,6 +808,7 @@ describe("untranslated amenity detection", async () => {
     const log = await eventsFor(french, {
       language: "fr",
       amenity_terms: ["playground", "kids club", "senior lounge"],
+      tour_verb: "Visite",
       subject: "Visite Lomas del Río — Voir les espaces playground, kids club & senior lounge",
       body: "Bonjour Mateo,\nDécouvrez nos espaces playground, kids club et senior lounge.",
     });
@@ -812,6 +875,8 @@ describe("untranslated amenity detection", async () => {
 describe("response schema", () => {
   // OpenAI strict structured output rejects the whole request (HTTP 400) otherwise.
   test("every property is required (OpenAI strict mode)", () => {
-    assert.deepEqual([...RESPONSE_SCHEMA.required].sort(), Object.keys(RESPONSE_SCHEMA.properties).sort());
+    assert.deepEqual([...(RESPONSE_SCHEMA.required ?? [])].sort(), Object.keys(RESPONSE_SCHEMA.properties ?? {}).sort());
+    assert.equal(RESPONSE_SCHEMA.additionalProperties, false);
+    assert.equal("$schema" in RESPONSE_SCHEMA, false);
   });
 });

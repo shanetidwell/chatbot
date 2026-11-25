@@ -18,6 +18,7 @@ import { openAIContent } from "./llm.ts";
 import { logForObservability } from "./observability.ts";
 import { templateContent } from "./templates.ts";
 import { SMS_MAX_LENGTH } from "./text.ts";
+import { VOICE_MAX_LENGTH } from "./voice.ts";
 import type {
   BlockedAction,
   CheckName,
@@ -33,7 +34,7 @@ export async function processInput(
   testCase: TestCase,
   generate: ContentGenerator = openAIContent,
 ): Promise<ProcessResult> {
-  // 1. Channel. No consented (and supported) channel means nothing can be sent yet.
+  // 1. Channel. No consented channel means nothing can be sent yet.
   const channel = pickChannel(testCase);
   if (!channel) {
     logForObservability(testCase.task_id, "send_blocked", { reason: "no_consent", failed_checks: ["consent_verified"] });
@@ -80,7 +81,7 @@ async function buildAndCheck(
   const message: NextMessage =
     channel === "email"
       ? { channel, send_at, subject: content.subject ?? "", body, cta }
-      : { channel, send_at, subject: null, body, cta };
+      : { channel, send_at, subject: null, body, cta }; // SMS, and the voice call script
 
   logForObservability(testCase.task_id, "message_built", {
     channel,
@@ -92,6 +93,7 @@ async function buildAndCheck(
     body_length: body.length,
     // Track SMS headroom so we see it shrinking before it fails the length check.
     ...(channel === "sms" && { sms_length_headroom: SMS_MAX_LENGTH - body.length }),
+    ...(channel === "voice" && { voice_length_headroom: VOICE_MAX_LENGTH - body.length }),
   });
 
   return { message, failed: runChecks(message, testCase, content.language), source: content.source };

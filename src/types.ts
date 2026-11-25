@@ -3,9 +3,6 @@
 
 export type Channel = "sms" | "email" | "voice";
 
-// Channels we can actually send on. Voice isn't supported yet.
-export type SupportedChannel = Exclude<Channel, "voice">;
-
 // Which next_action each lifecycle stage leads to.
 //   new  -> start_cadence      (e.g. prospect_welcome_day0)
 //   open -> follow_up_in_days  (e.g. prospect_long_horizon_day3, value = N from "_dayN")
@@ -28,13 +25,16 @@ export type CtaType = CtaTypeByPrimaryCta[PrimaryCta]; // "schedule_tour"
 
 export type Cta = {
   type: CtaType;
-  options?: string[]; // reply choices, e.g. SMS ["Thu", "Fri"]
+  options?: string[]; // reply choices, e.g. SMS/voice ["Thu", "Fri"]
   link?: string; // e.g. email "https://oakridge.example/tour"
 };
 
-// The message the LLM returns. Email has a subject; SMS subject is null.
+// The message the LLM returns. Email has a subject; SMS and voice subject is null.
+// Voice: we don't place the call; `body` is the script the call would say (see voice.ts, which
+// holds every voice assumption until real voice samples arrive).
 export type NextMessage =
   | { channel: "sms"; send_at: string; subject: null; body: string; cta: Cta }
+  | { channel: "voice"; send_at: string; subject: null; body: string; cta: Cta }
   | { channel: "email"; send_at: string; subject: string; body: string; cta: Cta };
 
 // Shape of one line in sample.jsonl.
@@ -112,6 +112,6 @@ export type ProcessResult = {
 export type MessageContent = { subject: string | null; body: string; language: string; source: "llm" | "template" };
 
 // What's already decided before content is written.
-export type ContentContext = { channel: SupportedChannel; send_at: string; cta: Cta };
+export type ContentContext = { channel: Channel; send_at: string; cta: Cta };
 
 export type ContentGenerator = (testCase: TestCase, ctx: ContentContext) => Promise<MessageContent>;

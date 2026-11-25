@@ -3,19 +3,22 @@
 import { addDays, dayOffset, WEEKDAY_ABBR, weekdayOf } from "./dates.ts";
 import { logForObservability } from "./observability.ts";
 import { shortPropertyName } from "./text.ts";
-import type { Cta, NextAction, SupportedChannel, TestCase } from "./types.ts";
+import { VOICE_CTA_STYLE } from "./voice.ts";
+import type { Cta, NextAction, Channel, TestCase } from "./types.ts";
 
 // ---------------------------------------------------------------------------
-// CTA: book_tour -> schedule_tour. Email gets a link; SMS gets reply options.
+// CTA: book_tour -> schedule_tour. Email gets a link; SMS gets reply options; voice gets
+// whatever VOICE_CTA_STYLE says (spoken/keypad options for now).
 // ---------------------------------------------------------------------------
 
-export function buildCta(testCase: TestCase, channel: SupportedChannel, sendAt: string): Cta {
+export function buildCta(testCase: TestCase, channel: Channel, sendAt: string): Cta {
   const primaryCta = testCase.assertions.constraints.primary_cta;
   if (primaryCta !== "book_tour") {
     logForObservability(testCase.task_id, "unsupported_primary_cta", { primary_cta: primaryCta });
     throw new Error(`Unsupported primary_cta "${primaryCta}"`);
   }
-  return channel === "email"
+  const style = channel === "email" ? "link" : channel === "sms" ? "options" : VOICE_CTA_STYLE;
+  return style === "link"
     ? { type: "schedule_tour", link: tourLink(testCase.input.property_name) }
     : { type: "schedule_tour", options: tourOptions(sendAt) };
 }
@@ -31,7 +34,7 @@ function tourLink(propertyName: string): string {
   return `https://${slug}.example/tour`;
 }
 
-// Two tour days for SMS reply options: the first two weekdays starting two days after the send
+// Two tour days for SMS/voice reply options: the first two weekdays starting two days after the send
 // date (send Tue 2025-12-09 -> ["Thu", "Fri"]).
 function tourOptions(sendAt: string): string[] {
   const options: string[] = [];
