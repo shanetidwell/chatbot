@@ -3,6 +3,9 @@
 
 export type Channel = "sms" | "email" | "voice";
 
+// Channels we can actually send on. Voice isn't supported yet.
+export type SupportedChannel = Exclude<Channel, "voice">;
+
 // Which next_action each lifecycle stage leads to.
 //   new  -> start_cadence      (e.g. prospect_welcome_day0)
 //   open -> follow_up_in_days  (e.g. prospect_long_horizon_day3, value = N from "_dayN")
@@ -95,3 +98,17 @@ export type ProcessResult = {
   next_message: NextMessage | null;
   next_action: NextAction | BlockedAction;
 };
+
+// ---------------------------------------------------------------------------
+// Content generation: the subject and raw body for the chosen channel.
+// openAIContent (llm.ts) is the default; templateContent (templates.ts) is the deterministic
+// fallback, and what the tests use.
+// ---------------------------------------------------------------------------
+
+// `source` says which generator actually wrote it (the OpenAI one falls back to templates).
+export type MessageContent = { subject: string | null; body: string; source: "llm" | "template" };
+
+// What's already decided before content is written.
+export type ContentContext = { channel: SupportedChannel; send_at: string; cta: Cta };
+
+export type ContentGenerator = (testCase: TestCase, ctx: ContentContext) => Promise<MessageContent>;

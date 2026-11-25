@@ -1,13 +1,15 @@
-// Run: npx tsx chatbot
+// Runs every record in data/sample.jsonl through processInput and compares it with `expected`.
 //
-// Subject and body come from OpenAI when OPENAI_API_KEY is set, in the shell or .env (see llm.ts), so they will
-// usually differ from `expected` in wording. That doesn't fail the record (the message has already
-// passed the brand, Fair Housing and PII checks); the expected and actual text are printed one
-// above the other instead. Everything else (channel, send_at, cta, next_action) must match exactly.
+// Run: npm start   (or: npx tsx src/chatbot.ts)
 //
-// Colors: input = cyan, output = green (matches expected) or red (mismatch); differing
-// subject/body = yellow.
-// Set NO_COLOR=1 to turn colors off.
+// Subject and body come from OpenAI when OPENAI_API_KEY is set, in the shell or .env (see
+// llm.ts), so they will usually differ from `expected` in wording. That doesn't fail the record
+// (the message has already passed the brand, Fair Housing and PII checks); the expected and
+// actual text are printed one above the other instead. Everything else (channel, send_at, cta,
+// next_action) must match exactly.
+//
+// Colors: input = cyan, output = green (matches expected) or red (mismatch), differing
+// subject/body = yellow. Set NO_COLOR=1 to turn colors off.
 
 import { logForObservability } from "./observability.ts";
 import { processInput } from "./processInput.ts";
@@ -73,12 +75,12 @@ function printTextComparison(differences: Difference[]): void {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // OPENAI_API_KEY etc. from .env, so `npx tsx chatbot` is enough. Variables already set in the
+  // OPENAI_API_KEY etc. from .env, so `npm start` is enough. Variables already set in the
   // shell win. No .env file: carry on, and llm.ts logs that it fell back to the templates.
   try {
-    process.loadEnvFile(new URL("./.env", import.meta.url));
+    process.loadEnvFile(new URL("../.env", import.meta.url));
   } catch {}
-  const testCases = await readTestCases(new URL("./sample.jsonl", import.meta.url));
+  const testCases = await readTestCases(new URL("../data/sample.jsonl", import.meta.url));
   let passed = 0;
 
   for (const testCase of testCases) {

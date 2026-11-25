@@ -1,0 +1,15 @@
+{
+  "name": "chatbot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/chatbot.ts",
+    "test": "tsx --test test/*.spec.ts",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.7",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

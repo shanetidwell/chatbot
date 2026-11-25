@@ -1,29 +1,24 @@
-// Subject and body from OpenAI (spec step 5).
+// Subject and body from OpenAI (spec step 5), falling back to the templates.
 //
 // Env:
 //   OPENAI_API_KEY      required; without it the template content is used instead.
 //   OPENAI_MODEL        default "gpt-5-mini" (fast, strong at following format rules).
 //   OPENAI_TIMEOUT_MS   default 10000.
 //
-// The runner (chatbot.ts) loads these from .env. Every call logs `llm_generated` with what OpenAI
-// returned, including the subject/body text. That text has the user's first name in it, which is
-// fine for local runs but should be dropped before these logs go anywhere they're kept.
+// The runner (chatbot.ts) loads these from .env at the repo root.
+//
+// Every call logs `llm_generated` with what OpenAI returned, including the subject/body text.
+// That text has the user's first name in it, which is fine for local runs but should be dropped
+// before these logs go anywhere they're kept.
 //
 // Only the fields listed in `promptInput` are sent: no city_interest, no `expected`, no other
 // profile values, no last_interaction.
 
-import { shortPropertyName } from "./actions.ts";
-import { looseMoveTiming } from "./dates.ts";
-import {
-  OPT_OUT_TEXT,
-  templateContent,
-  tourWeekPhrase,
-  type ContentContext,
-  type ContentGenerator,
-  type MessageContent,
-} from "./message.ts";
+import { fullDayName, looseMoveTiming, tourWeekPhrase } from "./dates.ts";
 import { logForObservability } from "./observability.ts";
-import type { TestCase } from "./types.ts";
+import { templateContent } from "./templates.ts";
+import { amenityPhrases, OPT_OUT_TEXT, replyChoices, shortPropertyName, subjectAmenities } from "./text.ts";
+import type { ContentContext, ContentGenerator, MessageContent, TestCase } from "./types.ts";
 
 // Read at call time, not import time, so values loaded from .env after import still apply.
 const model = () => process.env.OPENAI_MODEL ?? "gpt-5-mini";
@@ -63,21 +58,9 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-const WEEKDAY_FULL: Record<string, string> = {
-  Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday",
-};
-const AMENITY_PHRASE: Record<string, string> = { fitness: "24/7 fitness center" };
-
-function joinList(items: string[], pairJoiner: string): string {
-  if (items.length <= 1) return items.join("");
-  if (items.length === 2) return `${items[0]}${pairJoiner}${items[1]}`;
-  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-}
-
 // The allow-listed facts the model sees.
 function promptInput(testCase: TestCase, { channel, cta, send_at }: ContentContext) {
   const { constraints } = testCase.assertions;
-  const amenities = testCase.input.profile.amenity_interest ?? [];
   const options = cta.options ?? [];
   return {
     channel,
@@ -85,14 +68,14 @@ function promptInput(testCase: TestCase, { channel, cta, send_at }: ContentConte
     first_name: testCase.input.profile.first_name,
     property_name: shortPropertyName(testCase.input.property_name),
     move_timing: looseMoveTiming(testCase.input.move_date_target),
-    amenity_phrases: amenities.map((a) => AMENITY_PHRASE[a] ?? a),
-    subject_amenities: testCase.task_id.startsWith("prospect") ? joinList(amenities, " & ") : "",
+    amenity_phrases: amenityPhrases(testCase.input.profile.amenity_interest ?? []),
+    subject_amenities: subjectAmenities(testCase),
     constraints,
     ...(channel === "sms"
       ? {
           tour_week: tourWeekPhrase(send_at, options),
-          tour_days: options.map((o) => WEEKDAY_FULL[o] ?? o),
-          reply_line: `Reply ${options.map((o, i) => `${i + 1} for ${o}`).join(", ")}.`,
+          tour_days: options.map(fullDayName),
+          reply_line: `Reply ${replyChoices(options)}.`,
         }
       : { tour_link: cta.link }),
     include_opt_out_instructions: constraints.include_opt_out_instructions,

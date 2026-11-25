@@ -1,15 +1,33 @@
-import { buildCta, buildNextAction, pickChannel } from "./actions.ts";
-import { blocked, runChecks } from "./checks.ts";
+// processInput: one test case in, `{ next_message, next_action }` out, following the spec's
+// steps in the order it lists them. Each step lives in its own module:
+//
+//   1. channel      channel.ts
+//   2. send_at      dates.ts
+//   3. CTA          actions.ts
+//   4. next_action  actions.ts
+//   5. content      llm.ts (OpenAI), templates.ts (fallback)
+//   6. checks       checks.ts
+//
+// `generate` writes the subject and body: OpenAI by default, templates in the tests.
+
+import { buildCta, buildNextAction } from "./actions.ts";
+import { pickChannel } from "./channel.ts";
+import { runChecks } from "./checks.ts";
 import { computeSendAt } from "./dates.ts";
 import { openAIContent } from "./llm.ts";
-import { finishBody, templateContent, type ContentGenerator, type MessageContent } from "./message.ts";
 import { logForObservability } from "./observability.ts";
-import type { CheckName, Cta, NextMessage, ProcessResult, TestCase } from "./types.ts";
-
-// ---------------------------------------------------------------------------
-// processInput: the spec's steps, in the order it lists them.
-// `generate` writes the subject and body; OpenAI by default, templates in the tests.
-// ---------------------------------------------------------------------------
+import { templateContent } from "./templates.ts";
+import { appendOptOut, SMS_MAX_LENGTH } from "./text.ts";
+import type {
+  BlockedAction,
+  CheckName,
+  ContentContext,
+  ContentGenerator,
+  MessageContent,
+  NextMessage,
+  ProcessResult,
+  TestCase,
+} from "./types.ts";
 
 export async function processInput(
   testCase: TestCase,
@@ -26,14 +44,15 @@ export async function processInput(
   const send_at = computeSendAt(testCase);
   const cta = buildCta(testCase, channel, send_at);
   const nextAction = buildNextAction(testCase);
+  const ctx: ContentContext = { channel, send_at, cta };
 
   // 5. Content, then 6. checks.
-  let { message, failed, source } = await buildAndCheck(testCase, generate, channel, send_at, cta);
+  let { message, failed, source } = await buildAndCheck(testCase, generate, ctx);
 
   // Model output that fails a check is replaced by the template message, which is checked again.
   if (failed.length > 0 && source === "llm") {
     logForObservability(testCase.task_id, "llm_content_rejected", { failed_checks: failed });
-    ({ message, failed, source } = await buildAndCheck(testCase, templateContent, channel, send_at, cta));
+    ({ message, failed, source } = await buildAndCheck(testCase, templateContent, ctx));
   }
 
   // Any failure: don't send, don't advance.
@@ -47,15 +66,15 @@ export async function processInput(
   return { next_message: message, next_action: nextAction };
 }
 
+// Generates the content, assembles the full message (adding the opt-out line), and runs the checks.
 async function buildAndCheck(
   testCase: TestCase,
   generate: ContentGenerator,
-  channel: "sms" | "email",
-  send_at: string,
-  cta: Cta,
+  ctx: ContentContext,
 ): Promise<{ message: NextMessage; failed: CheckName[]; source: MessageContent["source"] }> {
-  const content = await generate(testCase, { channel, send_at, cta });
-  const body = finishBody(content.body, testCase, channel);
+  const { channel, send_at, cta } = ctx;
+  const content = await generate(testCase, ctx);
+  const body = appendOptOut(content.body, testCase, channel);
   const message: NextMessage =
     channel === "email"
       ? { channel, send_at, subject: content.subject ?? "", body, cta }
@@ -67,9 +86,16 @@ async function buildAndCheck(
     timezone: testCase.input.timezone,
     generator: content.source,
     body_length: body.length,
-    // SMS has a 320-character limit; track headroom so we see it shrinking before it fails.
-    ...(channel === "sms" && { sms_length_headroom: 320 - body.length }),
+    // Track SMS headroom so we see it shrinking before it fails the length check.
+    ...(channel === "sms" && { sms_length_headroom: SMS_MAX_LENGTH - body.length }),
   });
 
   return { message, failed: runChecks(message, testCase), source: content.source };
+}
+
+// Not sending: the next step is to fix what failed (get consent, pass Fair Housing, apply brand
+// style, remove PII) instead of advancing.
+function blocked(failed: CheckName[]): ProcessResult {
+  const next_action: BlockedAction = { type: "resolve_failed_checks", failed_checks: failed };
+  return { next_message: null, next_action };
 }

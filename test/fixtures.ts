@@ -1,9 +1,7 @@
-// Loading test cases from sample.jsonl, plus the two sample records as typed examples.
+// The two records from data/sample.jsonl, as typed TestCase objects for the tests to build on.
+// The "sample.jsonl" test checks they stay identical to the file.
 
-import { readFile } from "node:fs/promises";
-import type { TestCase } from "./types.ts";
-
-// The two records from sample.jsonl, as examples of TestCase.
+import type { TestCase } from "../src/types.ts";
 
 // 1) Day-0 welcome: opted into SMS and prefers it -> short SMS with reply options.
 export const welcomeDay0: TestCase = {
@@ -87,19 +85,3 @@ export const longHorizonDay3: TestCase = {
     next_action: { type: "follow_up_in_days", value: 3 },
   },
 };
-
-// Reads a JSONL file and parses each non-blank line into a TestCase.
-export async function readTestCases(path: URL): Promise<TestCase[]> {
-  const text = await readFile(path, "utf8");
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line, i) => {
-      try {
-        return JSON.parse(line) as TestCase;
-      } catch (err) {
-        throw new Error(`sample.jsonl line ${i + 1}: invalid JSON (${(err as Error).message})`);
-      }
-    });
-}

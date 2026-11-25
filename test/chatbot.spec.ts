@@ -1,4 +1,4 @@
-// Run: npx tsx --test chatbot.spec.ts
+// Run: npm test   (or: npx tsx --test test/chatbot.spec.ts)
 //
 // channel, send_at, cta and next_action must match `expected` exactly.
 // subject and body only need to match loosely (key content, format, opt-out line, no PII),
@@ -6,11 +6,12 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { processInput as processWith } from "./processInput.ts";
-import { templateContent } from "./message.ts";
-import { runChecks } from "./checks.ts";
-import { longHorizonDay3, readTestCases, welcomeDay0 } from "./testCases.ts";
-import type { NextMessage, ProcessResult, TestCase } from "./types.ts";
+import { runChecks } from "../src/checks.ts";
+import { processInput as processWith } from "../src/processInput.ts";
+import { templateContent } from "../src/templates.ts";
+import { readTestCases } from "../src/testCases.ts";
+import type { NextMessage, ProcessResult, TestCase } from "../src/types.ts";
+import { longHorizonDay3, welcomeDay0 } from "./fixtures.ts";
 
 // The tests use the template generator: deterministic, and no network calls.
 const processInput = (testCase: TestCase) => processWith(testCase, templateContent);
@@ -283,7 +284,7 @@ describe("checks", async () => {
 // ===========================================================================
 
 
-const sampleUrl = new URL("./sample.jsonl", import.meta.url);
+const sampleUrl = new URL("../data/sample.jsonl", import.meta.url);
 
 // ---------------------------------------------------------------------------
 // sample.jsonl end to end
@@ -292,7 +293,7 @@ const sampleUrl = new URL("./sample.jsonl", import.meta.url);
 describe("sample.jsonl", async () => {
   const records = await readTestCases(sampleUrl);
 
-  test("has the two records, identical to the typed copies in testCases.ts", async () => {
+  test("has the two records, identical to the typed copies in fixtures.ts", async () => {
     assert.equal(records.length, 2);
     assert.deepEqual(records[0], welcomeDay0);
     assert.deepEqual(records[1], longHorizonDay3);
